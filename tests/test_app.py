@@ -88,6 +88,18 @@ async def test_status_line_names_what_runs_out_first(stub):
         # Codex 98% outranks Fable 91%; both are flagged, the hotter one wins.
         text = app.query(StatusLine).first().render().plain
         assert "Codex" in text and "98" in text
+        # Plain wording, not the optimization-theory term it started as.
+        assert "runs out first" in text
+        assert "binding" not in text.lower()
+
+
+async def test_each_panel_reports_its_own_age(stub):
+    """One global 'updated at' would hide a provider that stopped refreshing."""
+    app = FuelGaugeApp(interval=3600)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        for panel in app.query(ProviderPanel):
+            assert "ago" in panel.border_subtitle or "just now" in panel.border_subtitle
 
 
 async def test_refresh_updates_in_place_without_remounting(stub):
