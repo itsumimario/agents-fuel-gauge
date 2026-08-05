@@ -1,0 +1,32 @@
+Screen {
+    background: $surface;
+}
+
+#status {
+    height: 1;
+    padding: 0 2;
+    margin: 1 1 0 1;
+}
+
+#panels {
+    padding: 0 1;
+}
+
+ProviderPanel {
+    height: auto;
+    border: round $panel-lighten-2;
+    border-title-color: $text;
+    border-title-style: bold;
+    border-subtitle-color: $text-muted;
+    padding: 1 2;
+    margin: 1 0 0 0;
+}
+
+GaugeBar {
+    height: 1;
+}
+
+.issue {
+    height: auto;
+    padding: 0 1;
+}
