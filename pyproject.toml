@@ -14,7 +14,7 @@ agents-fuel-gauge = "agents_fuel_gauge.cli:main"
 afg = "agents_fuel_gauge.cli:main"
 
 [dependency-groups]
-dev = ["pytest>=8.0", "pytest-asyncio>=0.24"]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.24", "cairosvg>=2.7"]
 
 [build-system]
 requires = ["hatchling"]

@@ -163,9 +163,13 @@ class FuelGaugeApp(App):
         ("t", "cycle_theme", "Theme"),
     ]
 
-    def __init__(self, interval: float = 60.0) -> None:
+    def __init__(self, interval: float = 60.0, fetcher=None) -> None:
         super().__init__()
         self.interval = interval
+        # Injectable so --demo and the screenshot script can supply synthetic
+        # data without the network. Resolved here, not at import, so tests can
+        # still monkeypatch the module-level fetch_all.
+        self.fetcher = fetcher or fetch_all
         self.snapshots: list[ProviderSnapshot] = []
 
     def compose(self) -> ComposeResult:
@@ -176,6 +180,10 @@ class FuelGaugeApp(App):
 
     def on_mount(self) -> None:
         self.sub_title = "fetching…"
+        # Textual's default header icon is U+2B58, which plenty of monospace
+        # fonts lack — it shows up as a tofu box. U+2261 is far better covered
+        # and still reads as "menu".
+        self.query_one(Header).icon = "≡"
         self._hide_cursor()
         # Countdowns tick locally every second; the network is only hit on
         # `interval`, so a 1s display refresh costs nothing.
@@ -209,7 +217,7 @@ class FuelGaugeApp(App):
 
     async def poll(self) -> None:
         try:
-            fetched = await fetch_all()
+            fetched = await self.fetcher()
         except Exception as exc:  # never let a poll kill the app
             self.sub_title = f"fetch failed: {exc.__class__.__name__}"
             return

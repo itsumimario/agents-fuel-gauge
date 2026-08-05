@@ -37,12 +37,13 @@ def render_plain(snapshots: list[ProviderSnapshot]) -> str:
     Built for `grep`/`awk` and for pasting into an issue, so the marker is the
     word FIRST rather than a symbol, and nothing depends on colour.
     """
-    rows: list[str] = []
+    # Two row kinds: aligned data rows, and free-form error rows. They are
+    # collected separately so column widths are computed only over rows that
+    # actually have columns — an error-only result has none.
+    rows: list[tuple[str, tuple[str, ...]]] = []
     for snap in snapshots:
         if snap.error:
-            rows.append(f"{snap.key}\tERROR\t{snap.error}")
-            if not snap.gauges:
-                continue
+            rows.append(("error", (snap.key, snap.error)))
         for gauge in snap.gauges:
             flags = []
             if gauge.runs_out_first:
@@ -50,31 +51,38 @@ def render_plain(snapshots: list[ProviderSnapshot]) -> str:
             if snap.stale:
                 flags.append("STALE")
             rows.append(
-                "\t".join(
+                (
+                    "data",
                     (
                         snap.key,
                         gauge.window,
-                        gauge.scope,
+                        # Every field must be a single whitespace-free token,
+                        # or `awk '$4+0 > 80'` silently reads the wrong column:
+                        # "all models" and "2h 10m" would each split in two.
+                        gauge.scope.replace(" ", "-"),
                         f"{gauge.percent:.0f}%",
-                        format_countdown(gauge.seconds_remaining()) or "-",
+                        format_countdown(gauge.seconds_remaining()).replace(" ", "")
+                        or "-",
                         ",".join(flags) or "-",
-                    )
+                    ),
                 )
             )
     if not rows:
         return "no usage data\n"
 
-    # Align on the tab-separated columns without needing an external tool.
-    split = [r.split("\t") for r in rows]
-    widths = [max(len(c[i]) for c in split if len(c) > i) for i in range(6)]
+    data = [cells for kind, cells in rows if kind == "data"]
+    widths = (
+        [max(len(cells[i]) for cells in data) for i in range(6)] if data else [0] * 6
+    )
+
     out = []
-    for cells in split:
-        if cells[1] == "ERROR":
-            out.append(f"{cells[0]:<{widths[0]}}  ERROR  {cells[2]}")
-            continue
-        out.append(
-            "  ".join(cell.ljust(widths[i]) for i, cell in enumerate(cells)).rstrip()
-        )
+    for kind, cells in rows:
+        if kind == "error":
+            out.append(f"{cells[0].ljust(widths[0])}  ERROR  {cells[1]}")
+        else:
+            out.append(
+                "  ".join(c.ljust(widths[i]) for i, c in enumerate(cells)).rstrip()
+            )
     return "\n".join(out) + "\n"
 
 
@@ -149,14 +157,23 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--no-color", action="store_true", help="never emit ANSI colour",
     )
+    parser.add_argument(
+        "--demo", action="store_true",
+        help="render synthetic data instead of your accounts (no network)",
+    )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
+    if args.demo:
+        from .demo import fetch_demo as fetcher
+    else:
+        fetcher = fetch_all
+
     if args.check or args.json or args.pretty:
-        snapshots = asyncio.run(fetch_all())
+        snapshots = asyncio.run(fetcher())
         if args.json:
             json.dump([s.to_dict() for s in snapshots], sys.stdout, indent=2)
             sys.stdout.write("\n")
@@ -177,7 +194,7 @@ def main(argv: list[str] | None = None) -> int:
             f"faster polling)",
             file=sys.stderr,
         )
-    FuelGaugeApp(interval=interval).run()
+    FuelGaugeApp(interval=interval, fetcher=fetcher if args.demo else None).run()
     return 0
 
 
