@@ -1,0 +1,39 @@
+name: privacy
+
+# Backstop, not the primary defence. The pre-push hook is what prevents
+# disclosure; by the time this runs the commits already exist on GitHub. This
+# catches pushes from machines without the hook installed, pushes made with
+# --no-verify, and contributions from forks.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    name: scan for private data
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The scan walks every commit — a secret deleted in a later commit is
+          # still readable in the earlier one. A shallow clone would miss it.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Scan working tree and full history
+        run: python3 scripts/privacy_scan.py
+
+      - name: Verify the scanner still catches known leaks
+        # A scanner that silently stopped matching would report "clean" forever.
+        run: |
+          python3 -m pip install --quiet pytest
+          python3 -m pytest tests/test_privacy_scan.py -q

@@ -327,6 +327,44 @@ Textual app headless.
 Screenshots are always generated from `--demo`, so no real account usage can
 end up in the repository.
 
+### Privacy guard
+
+This repo reads live credentials and renders live account data, so a careless
+paste or a screenshot regenerated from a real session would publish something
+personal. Two layers stop that:
+
+```sh
+./scripts/install-hooks.sh      # enable the pre-push hook (do this once)
+python3 scripts/privacy_scan.py # or run the scan by hand any time
+```
+
+| Layer | When it runs | What it does |
+| ----- | ------------ | ------------ |
+| `.githooks/pre-push` | before anything leaves your machine | **blocks the push** |
+| `.github/workflows/privacy.yml` | after the push lands | backstop for `--no-verify`, other machines, forks |
+
+The hook is the one that matters. CI can only tell you that you *have* already
+published something — and rewriting history afterwards doesn't un-publish it.
+
+The scan covers the working tree **and every commit**: file contents, commit
+messages, and author/committer identities. A secret deleted in a later commit
+is still perfectly readable in the earlier one.
+
+It looks for email addresses, absolute home paths, machine names, private
+keys, API-token shapes, JWTs, credential-shaped assignments, and masked
+account addresses that didn't come from the demo data. Two design rules:
+
+- **Patterns, never literals.** A config file listing "my email is X, my
+  username is Y" would itself be the disclosure the moment the repo goes
+  public. Everything matches by shape.
+- **Findings are redacted.** A scanner that prints the secret it found just
+  moves the leak into the CI log, which is public on a public repo.
+
+False positive? Add an allow pattern to the rule in `scripts/privacy_scan.py`,
+so the exception is reviewed in a diff rather than silently bypassed. Every
+rule has tests proving it catches a real leak and clears a safe value —
+otherwise a scanner that quietly stopped matching would report "clean" forever.
+
 ## License
 
 [MIT](LICENSE)

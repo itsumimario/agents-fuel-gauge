@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+#
+# Block a push that would publish private data.
+#
+# This is the hook that actually *prevents* disclosure. The CI workflow is a
+# backstop — by the time it runs, the commits are already on GitHub's servers
+# and in anyone's next fetch. Stopping it here is the difference between a
+# near-miss and an incident.
+#
+# Enable with:  ./scripts/install-hooks.sh
+# Bypass with:  git push --no-verify   (you had better be sure)
+
+set -uo pipefail
+
+REPO=$(git rev-parse --show-toplevel)
+SCANNER="$REPO/scripts/privacy_scan.py"
+
+[ -f "$SCANNER" ] || exit 0  # nothing to enforce on branches without it
+
+PYTHON=$(command -v python3 || command -v python) || {
+  echo "pre-push: no python found; cannot run the privacy scan." >&2
+  echo "          re-run with --no-verify only if you are certain." >&2
+  exit 1
+}
+
+echo "pre-push: scanning for private data…"
+if ! "$PYTHON" "$SCANNER"; then
+  cat >&2 <<'EOF'
+
+pre-push: BLOCKED — the push was not sent.
+
+Anything above would have become readable by anyone the moment this
+repository is public, and rewriting history afterwards does not un-publish
+it. Fix the findings, then push again.
+
+If a finding is a false positive, add an allow pattern to the relevant rule
+in scripts/privacy_scan.py so the exception is reviewed and permanent rather
+than silently bypassed.
+EOF
+  exit 1
+fi
+
+exit 0
