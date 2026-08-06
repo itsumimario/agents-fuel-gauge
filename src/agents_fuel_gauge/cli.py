@@ -161,11 +161,20 @@ def build_parser() -> argparse.ArgumentParser:
         "--demo", action="store_true",
         help="render synthetic data instead of your accounts (no network)",
     )
+    parser.add_argument(
+        "--update", action="store_true",
+        help="fetch the latest version and reinstall",
+    )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+
+    if args.update:
+        from .update import update
+
+        return update()
 
     if args.demo:
         from .demo import fetch_demo as fetcher
