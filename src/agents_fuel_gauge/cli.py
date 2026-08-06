@@ -211,7 +211,7 @@ def render_pretty(snapshots: list[ProviderSnapshot], color: bool) -> str:
             lines.append(
                 f"  {gauge.label:<24}{tint}{bar}{off} "
                 f"{tint}{gauge.percent:>3.0f}%{off}  "
-                f"resets {resets}  ({left:>6})  {note}"
+                f"resets {resets}  ({left:>7})  {note}"
             )
     if not lines:
         return "no usage data\n"

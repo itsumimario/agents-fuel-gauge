@@ -131,11 +131,11 @@ blanks a panel — the last known numbers stay up behind a warning.
 
 ```console
 $ afg --check
-claude  5h  all-models           34%  2h10m   -       spare_capacity  2026-08-06T10:16  2h     +150%
-claude  7d  all-models           68%  18h07m  -       spare_capacity  2026-08-07T02:13  18h    +289%
-claude  7d  Fable                91%  18h07m  ACTIVE  on_track        2026-08-07T02:13  18h    -
-codex   7d  all-models           82%  5d01h   -       slow_down       2026-08-11T10:05  5d1h   -92%
-codex   7d  GPT-5.3-Codex-Spark  12%  6d21h   -       too_early       2026-08-13T06:05  6d21h  -
+claude  5h  all-models           34%  2h10m   -       spare_capacity  2026-08-06T10:31  2h10m   +150%
+claude  7d  all-models           68%  18h07m  -       spare_capacity  2026-08-07T02:28  18h07m  +289%
+claude  7d  Fable                91%  18h07m  ACTIVE  on_track        2026-08-07T02:28  18h07m  -
+codex   7d  all-models           82%  5d01h   -       slow_down       2026-08-11T10:20  5d1h    -92%
+codex   7d  GPT-5.3-Codex-Spark  12%  6d21h   -       too_early       2026-08-13T06:20  6d21h   -
 ```
 
 | | Column | |
@@ -144,11 +144,11 @@ codex   7d  GPT-5.3-Codex-Spark  12%  6d21h   -       too_early       2026-08-13
 | `$2` | window | `5h`, `7d` |
 | `$3` | scope | `all-models` or a model name |
 | `$4` | used | percent |
-| `$5` | resets in | countdown |
+| `$5` | resets in | countdown, to the second in the last hour |
 | `$6` | flags | `ACTIVE` — the provider says this limit is the one in force. `STALE` — carried over from an earlier poll |
 | `$7` | pace verdict | |
 | `$8` | resets at | local time, ISO-ish |
-| `$9` | remaining | days and hours |
+| `$9` | remaining | `18h07m` inside a day, `5d1h` past one |
 | `$10` | change | signed: `-92%` means slow down by 92% |
 
 Every field is a single whitespace-free token, so awk columns mean what you'd

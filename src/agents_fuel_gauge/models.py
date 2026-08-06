@@ -89,21 +89,27 @@ def format_reset_at(when: datetime | None, style: str = "full") -> str:
 
 
 def format_remaining(seconds: int | None) -> str:
-    """Days and hours, or just hours inside a day, or minutes inside an hour.
+    """Days and hours, or hours and minutes inside a day, or minutes.
 
-    Coarser than `format_countdown` on purpose: the exact reset time is shown
-    beside it, so this only has to answer "roughly how long have I got".
+    Precision is spent where a decision hangs on it. Inside a day, "3h" and
+    "3h 58m" are an hour apart, and an hour is the difference between starting
+    a piece of work and not. Past a day the minutes are noise — nobody plans
+    Tuesday around whether the reset lands at 10:05 or 10:47 — so `5d 1h` keeps
+    the column narrow for a number read at a glance.
+
+    Minutes are zero-padded so the column stays flush when right-aligned:
+    unpadded, "3h 5m" and "18h 42m" jag against each other.
     """
     if seconds is None:
         return ""
     total = int(seconds)
     days, rem = divmod(total, 86_400)
     hours, rem = divmod(rem, 3_600)
+    minutes = rem // 60
     if days:
         return f"{days}d {hours}h"
     if hours:
-        return f"{hours}h"
-    minutes = rem // 60
+        return f"{hours}h {minutes:02d}m"
     return f"{minutes}m" if minutes else "<1m"
 
 

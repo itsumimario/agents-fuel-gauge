@@ -14,6 +14,7 @@ from agents_fuel_gauge.models import (
     ProviderSnapshot,
     format_age,
     format_countdown,
+    format_remaining,
     mask_email,
 )
 from agents_fuel_gauge.sources import (
@@ -261,6 +262,22 @@ class TestHelpers:
         assert format_countdown(18 * 3600 + 8 * 60) == "18h 08m"
         assert format_countdown(75) == "1m 15s"
         assert format_countdown(None) == ""
+
+    def test_remaining_granularity(self):
+        """Minutes matter inside a day and are noise past one."""
+        assert format_remaining(3 * 3600 + 42 * 60) == "3h 42m"
+        assert format_remaining(3 * 3600 + 5 * 60) == "3h 05m"
+        assert format_remaining(23 * 3600 + 59 * 60) == "23h 59m"
+        assert format_remaining(5 * 86400 + 3600 + 42 * 60) == "5d 1h"
+        assert format_remaining(42 * 60) == "42m"
+        assert format_remaining(30) == "<1m"
+        assert format_remaining(None) == ""
+
+    def test_remaining_minutes_are_padded_so_the_column_stays_flush(self):
+        """Right-aligned, "3h 5m" and "18h 42m" would jag against each other."""
+        short = format_remaining(3 * 3600 + 5 * 60)
+        long = format_remaining(18 * 3600 + 42 * 60)
+        assert len(short) + 1 == len(long)  # differs only by the hours digit
 
     def test_mask_email(self):
         assert mask_email("someone@example.com") == "s•••@e•••.com"

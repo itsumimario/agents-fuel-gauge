@@ -294,7 +294,7 @@ class TestNarrowTerminal:
             for arrow in PACE_ARROW.values():
                 assert arrow in text, f"{arrow} undocumented at width {width}"
 
-    @pytest.mark.parametrize("width", [120, 80, 60, 56, 52, 50])
+    @pytest.mark.parametrize("width", [120, 80, 60, 56, 54, 52])
     async def test_absolute_reset_time_is_shown_when_there_is_room(self, stub, width):
         """A duration alone means doing arithmetic against your calendar."""
         app = FuelGaugeApp(interval=3600)
@@ -310,10 +310,11 @@ class TestNarrowTerminal:
     async def test_the_arrow_outlives_the_reset_clock(self, stub, width):
         """What to do about a meter outranks exactly when it resets.
 
-        Carrying the magnitude costs about six columns, so the wall-clock reset
-        time now yields at 50 rather than 44. That is the intended trade: the
-        relative countdown still answers "have I got time for this", while
-        nothing else on the row says which way to move.
+        Carrying the magnitude costs about six columns, and showing minutes
+        alongside hours costs one more, so the wall-clock reset time yields at
+        52 rather than the 44 it managed when the row was cheaper. That is the
+        intended trade: the relative countdown still answers "have I got time
+        for this", while nothing else on the row says which way to move.
         """
         app = FuelGaugeApp(interval=3600)
         async with app.run_test(size=(width, 30)) as pilot:
