@@ -15,7 +15,7 @@ import asyncio
 import json
 import sys
 
-from . import __version__
+from . import BANNER
 from .models import ProviderSnapshot, format_age, format_countdown
 from .sources import fetch_all
 
@@ -134,10 +134,12 @@ def build_parser() -> argparse.ArgumentParser:
         ),
         epilog=(
             "With no options this opens a live TUI. Use --check for a one-shot "
-            "reading you can pipe or paste."
+            "reading you can pipe or paste.\n\n"
+            f"{BANNER}. MIT licensed. Interface built with Textual."
         ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--version", action="version", version=f"afg {__version__}")
+    parser.add_argument("--version", action="version", version=BANNER)
     parser.add_argument(
         "-c", "--check", "-1", "--once", action="store_true", dest="check",
         help="print one reading and exit, instead of opening the TUI",

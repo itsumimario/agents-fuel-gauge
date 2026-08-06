@@ -17,6 +17,10 @@
   </picture>
 </p>
 
+<p align="center">
+  <sub>Terminal interface built with <a href="https://textual.textualize.io/">Textual</a>.</sub>
+</p>
+
 ## No sign-in. No API keys. No config.
 
 > **If `claude` or `codex` already works in your terminal, this already works.**
@@ -234,6 +238,14 @@ uv run python scripts/screenshot.py    # regenerate README images from demo data
 Screenshots are always generated from `--demo`, so no real account data can
 end up in the repository.
 
+## Credits
+
+**agents-fuel-gauge** by **ItsumiMario**.
+
+Built with [Textual](https://textual.textualize.io/) for the terminal UI,
+[httpx](https://www.python-httpx.org/) for the HTTP client, and
+[uv](https://docs.astral.sh/uv/) for packaging and installation.
+
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE) © ItsumiMario
