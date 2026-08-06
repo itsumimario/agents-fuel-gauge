@@ -7,7 +7,13 @@ from textual.app import App, ComposeResult
 from textual.containers import Vertical, VerticalScroll
 from textual.widgets import Footer, Header, Static
 
-from .models import Gauge, ProviderSnapshot, format_age, format_countdown
+from .models import (
+    Gauge,
+    ProviderSnapshot,
+    format_age,
+    format_countdown,
+    overall_directive,
+)
 from .sources import fetch_all
 
 BAR_FULL = "█"
@@ -17,6 +23,23 @@ SEVERITY_COLOR = {
     "normal": "green",
     "warning": "yellow",
     "critical": "red",
+}
+
+# Drift against budget, which is a different axis from how full the bar is:
+# a nearly-full bar late in its window is fine, an early one is not.
+PACE_MARK = {
+    "slow_down": "↑ ",
+    "spare_capacity": "↓ ",
+    "on_track": "· ",
+    "exhausted": "✗ ",
+    "too_early": "◦ ",
+}
+PACE_COLOR = {
+    "slow_down": "bold red",
+    "spare_capacity": "green",
+    "on_track": "dim",
+    "exhausted": "bold red",
+    "too_early": "dim",
 }
 
 
@@ -35,8 +58,15 @@ class GaugeBar(Static):
         gauge = self.gauge
         color = SEVERITY_COLOR.get(gauge.severity, "green")
 
-        label_width, meter_width, reset_width = 26, 6, 10
-        bar_width = max(8, self.size.width - label_width - meter_width - reset_width - 2)
+        pace = gauge.pace()
+        pace_mark = PACE_MARK.get(pace.verdict, "  ") if pace else "  "
+
+        label_width, meter_width, reset_width, pace_width = 26, 6, 10, 3
+        bar_width = max(
+            8,
+            self.size.width
+            - label_width - meter_width - reset_width - pace_width - 2,
+        )
         filled = min(bar_width, round(gauge.percent / 100 * bar_width))
 
         marker = "◆" if gauge.runs_out_first else " "
@@ -53,6 +83,12 @@ class GaugeBar(Static):
         text.append(
             f"  {format_countdown(gauge.seconds_remaining()):>{reset_width}}",
             style="dim",
+        )
+        # Pace is about drift from budget, which is a different question from
+        # severity, so it gets its own colour rather than inheriting the bar's.
+        text.append(
+            f" {pace_mark}",
+            style=PACE_COLOR.get(pace.verdict, "dim") if pace else "dim",
         )
         return text
 
@@ -148,6 +184,15 @@ class StatusLine(Static):
         remaining = format_countdown(gauge.seconds_remaining())
         if remaining:
             text.append(f"  ·  resets in {remaining}", style="dim")
+
+        # What to do about it, which the percentage alone never says.
+        directive = overall_directive(snapshots)
+        if directive.get("advice") and directive["verdict"] != "unknown":
+            text.append("  ·  ", style="dim")
+            text.append(
+                directive["advice"],
+                style=PACE_COLOR.get(directive["verdict"], "dim"),
+            )
         self.update(text)
 
 

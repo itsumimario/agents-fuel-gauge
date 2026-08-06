@@ -1,0 +1,149 @@
+"""Tests for the pace projection.
+
+The headline claim is that the same percentage means opposite things depending
+on how much of the window is left, so that is the first thing pinned here.
+"""
+
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
+from agents_fuel_gauge.models import (
+    MAX_RATE_ADJUSTMENT,
+    Gauge,
+    ProviderSnapshot,
+    overall_directive,
+)
+
+NOW = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+WEEK = 7 * 86_400
+FIVE_HOURS = 5 * 3_600
+
+
+def gauge(percent: float, elapsed_fraction: float, window: int = WEEK, **kw) -> Gauge:
+    """A gauge `elapsed_fraction` of the way through its window."""
+    remaining = int(window * (1 - elapsed_fraction))
+    return Gauge(
+        "7d", kw.pop("scope", "all models"), percent,
+        NOW + timedelta(seconds=remaining), window_seconds=window, **kw,
+    )
+
+
+class TestSamePercentOppositeAdvice:
+    """The reason this feature exists."""
+
+    def test_91_percent_late_in_the_window_is_fine(self):
+        pace = gauge(91, 0.90).pace(NOW)
+        assert pace.verdict == "on_track"
+
+    def test_91_percent_early_in_the_window_is_a_crisis(self):
+        pace = gauge(91, 0.40).pace(NOW)
+        assert pace.verdict == "slow_down"
+        assert pace.rate_adjustment < 0.2  # throttle hard
+
+    def test_the_two_differ_only_in_time_remaining(self):
+        late, early = gauge(91, 0.90).pace(NOW), gauge(91, 0.40).pace(NOW)
+        assert late.verdict != early.verdict
+        assert early.ratio > late.ratio
+
+
+class TestRatio:
+    def test_linear_burn_is_exactly_one(self):
+        assert gauge(50, 0.50).pace(NOW).ratio == pytest.approx(1.0)
+
+    def test_ratio_is_the_projected_finishing_percentage(self):
+        pace = gauge(60, 0.30).pace(NOW)
+        assert pace.ratio == pytest.approx(2.0)
+        assert pace.to_dict()["projectedUsagePercent"] == pytest.approx(200.0)
+
+    def test_under_budget_projects_below_one(self):
+        assert gauge(20, 0.80).pace(NOW).ratio < 1.0
+
+
+class TestRateAdjustment:
+    def test_on_pace_needs_no_change(self):
+        assert gauge(50, 0.50).pace(NOW).rate_adjustment == pytest.approx(1.0)
+
+    def test_multiplier_lands_exactly_on_empty(self):
+        """Applying it for the rest of the window must reach 100%, not over."""
+        g = gauge(80, 0.50)
+        pace = g.pace(NOW)
+        elapsed = WEEK * 0.5
+        remaining = WEEK - elapsed
+        current_rate = 0.80 / elapsed
+        projected = 0.80 + current_rate * pace.rate_adjustment * remaining
+        assert projected == pytest.approx(1.0)
+
+    def test_is_capped_so_it_never_returns_nonsense(self):
+        assert gauge(0.01, 0.90).pace(NOW).rate_adjustment <= MAX_RATE_ADJUSTMENT
+
+    def test_exhausted_means_stop(self):
+        pace = gauge(100, 0.50).pace(NOW)
+        assert pace.verdict == "exhausted"
+        assert pace.rate_adjustment == 0.0
+
+
+class TestEarlyWindowGuard:
+    """Minutes into a window, any usage divides into a meaningless ratio."""
+
+    def test_barely_started_window_refuses_to_judge(self):
+        pace = gauge(12, 0.02).pace(NOW)
+        assert pace.verdict == "too_early"
+
+    def test_early_verdict_advises_no_change(self):
+        """1.0 is a safe no-op for anything multiplying this into a rate."""
+        assert gauge(12, 0.02).pace(NOW).rate_adjustment == 1.0
+
+    def test_early_verdict_is_not_actionable(self):
+        assert gauge(12, 0.02).pace(NOW).actionable is False
+
+    def test_just_past_the_threshold_does_judge(self):
+        assert gauge(50, 0.10).pace(NOW).verdict != "too_early"
+
+
+class TestMissingInformation:
+    def test_no_window_length_means_no_projection(self):
+        g = Gauge("7d", "all models", 50.0, NOW + timedelta(days=3))
+        assert g.pace(NOW) is None
+
+    def test_no_reset_time_means_no_projection(self):
+        g = Gauge("7d", "all models", 50.0, None, window_seconds=WEEK)
+        assert g.pace(NOW) is None
+
+    def test_window_that_just_opened_means_no_projection(self):
+        assert gauge(0, 0.0).pace(NOW) is None
+
+
+class TestDirectiveSelection:
+    def _snapshot(self, *gauges) -> ProviderSnapshot:
+        return ProviderSnapshot(key="claude", display_name="Claude", gauges=list(gauges))
+
+    def test_picks_worst_pace_over_highest_percentage(self):
+        comfortable = gauge(95, 0.95, scope="nearly done")
+        strained = gauge(60, 0.30, scope="burning fast")
+        directive = overall_directive([self._snapshot(comfortable, strained)], NOW)
+        assert directive["constraint"]["label"] == "7d burning fast"
+        assert directive["constraint"]["percent"] == 60.0
+
+    def test_too_early_windows_cannot_become_the_constraint(self):
+        fresh = gauge(12, 0.01, scope="just opened")
+        steady = gauge(55, 0.50, scope="steady")
+        directive = overall_directive([self._snapshot(fresh, steady)], NOW)
+        assert directive["constraint"]["label"] == "7d steady"
+
+    def test_all_unknown_yields_a_safe_hold(self):
+        blind = Gauge("7d", "all models", 50.0, None)
+        directive = overall_directive([self._snapshot(blind)], NOW)
+        assert directive["verdict"] == "unknown"
+        assert directive["rateAdjustment"] is None
+        assert "hold" in directive["advice"]
+
+    def test_five_hour_and_weekly_windows_compare_fairly(self):
+        """Different window lengths must be comparable after normalising."""
+        session = Gauge(
+            "5h", "session", 80.0, NOW + timedelta(seconds=int(FIVE_HOURS * 0.5)),
+            window_seconds=FIVE_HOURS,
+        )
+        weekly = gauge(55, 0.50, scope="weekly")
+        directive = overall_directive([self._snapshot(session, weekly)], NOW)
+        assert directive["constraint"]["label"] == "5h session"

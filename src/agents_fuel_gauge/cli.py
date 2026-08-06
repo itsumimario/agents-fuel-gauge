@@ -14,10 +14,18 @@ import argparse
 import asyncio
 import json
 import sys
+import time
+from datetime import datetime, timezone
 
 from . import BANNER
-from .models import ProviderSnapshot, format_age, format_countdown
+from .models import (
+    ProviderSnapshot,
+    format_age,
+    format_countdown,
+    overall_directive,
+)
 from .sources import fetch_all
+
 
 ANSI = {"normal": "\033[32m", "warning": "\033[33m", "critical": "\033[31m"}
 RESET = "\033[0m"
@@ -29,6 +37,29 @@ BOLD = "\033[1m"
 MIN_INTERVAL = 15.0
 
 BAR_WIDTH = 24
+
+# Direction of drift against budget, not against 100%.
+PACE_MARK = {
+    "slow_down": "↑ over budget",
+    "spare_capacity": "↓ under budget",
+    "on_track": "· on budget",
+    "exhausted": "✗ spent",
+    "too_early": "◦ too early",
+}
+
+
+def build_payload(snapshots: list[ProviderSnapshot], at: str) -> dict:
+    """The JSON envelope.
+
+    `directive` sits at the top level because a subscriber usually wants one
+    instruction, not a table it has to reduce itself. `providers` keeps the
+    full detail for anything that does want to look closer.
+    """
+    return {
+        "at": at,
+        "directive": overall_directive(snapshots),
+        "providers": [s.to_dict() for s in snapshots],
+    }
 
 
 def render_plain(snapshots: list[ProviderSnapshot]) -> str:
@@ -64,15 +95,21 @@ def render_plain(snapshots: list[ProviderSnapshot]) -> str:
                         format_countdown(gauge.seconds_remaining()).replace(" ", "")
                         or "-",
                         ",".join(flags) or "-",
+                        # Appended, never inserted: existing scripts index
+                        # columns 1-6 and must keep working.
+                        (pace.verdict if (pace := gauge.pace()) else "-"),
                     ),
                 )
             )
     if not rows:
         return "no usage data\n"
 
+    columns = 7
     data = [cells for kind, cells in rows if kind == "data"]
     widths = (
-        [max(len(cells[i]) for cells in data) for i in range(6)] if data else [0] * 6
+        [max(len(cells[i]) for cells in data) for i in range(columns)]
+        if data
+        else [0] * columns
     )
 
     out = []
@@ -112,15 +149,28 @@ def render_pretty(snapshots: list[ProviderSnapshot], color: bool) -> str:
             tint, off = (ANSI.get(gauge.severity, ""), RESET) if color else ("", "")
             marker = "◆" if gauge.runs_out_first else " "
             countdown = format_countdown(gauge.seconds_remaining())
+            pace = gauge.pace()
+            note = f"  {PACE_MARK.get(pace.verdict, '')}" if pace else ""
             lines.append(
                 f"  {marker} {gauge.label:<24}{tint}{bar}{off} "
-                f"{tint}{gauge.percent:>3.0f}%{off}  {countdown}"
+                f"{tint}{gauge.percent:>3.0f}%{off}  {countdown:<8}{note}"
             )
     if not lines:
         return "no usage data\n"
+
+    directive = overall_directive(snapshots)
     lines.append("")
+    if directive.get("advice"):
+        constraint = directive["constraint"]
+        lines.append(
+            f"{BOLD if color else ''}pace{RESET if color else ''}  "
+            f"{constraint['provider']} {constraint['label']} is the constraint — "
+            f"{directive['advice']}"
+        )
     lines.append(
-        f"{DIM if color else ''}◆ runs out before the others{RESET if color else ''}"
+        f"{DIM if color else ''}◆ runs out before the others   "
+        f"↑ over budget   ↓ under budget   ◦ window too new to judge"
+        f"{RESET if color else ''}"
     )
     return "\n".join(lines) + "\n"
 
@@ -164,10 +214,36 @@ def build_parser() -> argparse.ArgumentParser:
         help="render synthetic data instead of your accounts (no network)",
     )
     parser.add_argument(
+        "-w", "--watch", action="store_true",
+        help="keep sampling on --interval instead of exiting; with --json this "
+             "emits one JSON object per line for another service to subscribe to",
+    )
+    parser.add_argument(
         "--update", action="store_true",
         help="fetch the latest version and reinstall",
     )
     return parser
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _emit_once(snapshots: list[ProviderSnapshot], args) -> None:
+    if args.json:
+        # One object per line, flushed immediately: a consumer reading the pipe
+        # gets each sample as it happens rather than when a buffer fills.
+        json.dump(build_payload(snapshots, _now()), sys.stdout,
+                  indent=None if args.watch else 2)
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+    elif args.pretty:
+        color = not args.no_color and sys.stdout.isatty()
+        sys.stdout.write(render_pretty(snapshots, color))
+        sys.stdout.flush()
+    else:
+        sys.stdout.write(render_plain(snapshots))
+        sys.stdout.flush()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -183,16 +259,18 @@ def main(argv: list[str] | None = None) -> int:
     else:
         fetcher = fetch_all
 
+    if args.watch:
+        interval = max(MIN_INTERVAL, args.interval)
+        try:
+            while True:
+                _emit_once(asyncio.run(fetcher()), args)
+                time.sleep(interval)
+        except KeyboardInterrupt:
+            return 0
+
     if args.check or args.json or args.pretty:
         snapshots = asyncio.run(fetcher())
-        if args.json:
-            json.dump([s.to_dict() for s in snapshots], sys.stdout, indent=2)
-            sys.stdout.write("\n")
-        elif args.pretty:
-            color = not args.no_color and sys.stdout.isatty()
-            sys.stdout.write(render_pretty(snapshots, color))
-        else:
-            sys.stdout.write(render_plain(snapshots))
+        _emit_once(snapshots, args)
         # Non-zero when anything failed, so `afg --check` composes in scripts.
         return 0 if all(s.ok for s in snapshots) else 1
 

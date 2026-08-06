@@ -42,6 +42,14 @@ _CLAUDE_WINDOW_BY_KIND = {
     "weekly_scoped": "7d",
 }
 
+# Anthropic reports a reset time but not a window length, so the lengths are
+# supplied here. Codex sends `limit_window_seconds` and needs no such table.
+_CLAUDE_WINDOW_SECONDS = {
+    "session": 5 * 3_600,
+    "weekly_all": 7 * 86_400,
+    "weekly_scoped": 7 * 86_400,
+}
+
 
 class SourceError(RuntimeError):
     """A fetch failed in a way worth showing the user verbatim."""
@@ -173,6 +181,7 @@ def _claude_gauges(payload: dict) -> list[Gauge]:
                     float(entry.get("percent") or 0.0)
                 ),
                 runs_out_first=bool(entry.get("is_active")),
+                window_seconds=_CLAUDE_WINDOW_SECONDS.get(kind),
             )
         )
     if gauges:
@@ -181,7 +190,10 @@ def _claude_gauges(payload: dict) -> list[Gauge]:
     # Degrade to the flat top-level windows rather than showing an empty panel.
     # These two keys predate `limits[]` and are the most stable thing in the
     # payload, which makes them a safe last resort — just an incomplete one.
-    for key, window in (("five_hour", "5h"), ("seven_day", "7d")):
+    for key, window, length in (
+        ("five_hour", "5h", 5 * 3_600),
+        ("seven_day", "7d", 7 * 86_400),
+    ):
         block = payload.get(key)
         if not isinstance(block, dict):
             continue
@@ -193,6 +205,7 @@ def _claude_gauges(payload: dict) -> list[Gauge]:
                 percent=percent,
                 resets_at=_parse_iso(block.get("resets_at")),
                 severity=derive_severity(percent),
+                window_seconds=length,
             )
         )
     return gauges
@@ -258,13 +271,15 @@ def _codex_windows(rate_limit: dict | None, scope: str) -> list[Gauge]:
         if not isinstance(window, dict):
             continue
         percent = float(window.get("used_percent") or 0.0)
+        length = window.get("limit_window_seconds")
         out.append(
             Gauge(
-                window=_duration_label(window.get("limit_window_seconds")),
+                window=_duration_label(length),
                 scope=scope,
                 percent=percent,
                 resets_at=_parse_epoch(window.get("reset_at")),
                 severity=derive_severity(percent),
+                window_seconds=int(length) if length else None,
             )
         )
     return out

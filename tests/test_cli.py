@@ -14,13 +14,26 @@ from agents_fuel_gauge.models import ProviderSnapshot
 
 
 class TestPlain:
-    def test_one_row_per_gauge_with_exactly_six_whitespace_free_columns(self):
+    def test_one_row_per_gauge_with_exactly_seven_whitespace_free_columns(self):
         """Any field containing a space would shift every awk column after it."""
         out = render_plain(demo_snapshots())
         rows = [r for r in out.splitlines() if r.strip()]
         assert len(rows) == 5
         for row in rows:
-            assert len(row.split()) == 6, row
+            assert len(row.split()) == 7, row
+
+    def test_pace_column_is_appended_not_inserted(self):
+        """Columns 1-6 are a published interface; pace must not shift them."""
+        rows = [r.split() for r in render_plain(demo_snapshots()).splitlines() if r.strip()]
+        for cells in rows:
+            assert cells[0] in {"claude", "codex"}      # $1 provider
+            assert cells[1].endswith(("h", "d"))         # $2 window
+            assert cells[3].endswith("%")                # $4 used
+            assert cells[5] in {"-", "FIRST", "STALE", "FIRST,STALE"}  # $6 flags
+            assert cells[6] in {                          # $7 pace, new
+                "-", "slow_down", "on_track", "spare_capacity",
+                "exhausted", "too_early",
+            }
 
     def test_marks_what_runs_out_first_without_symbols(self):
         out = render_plain(demo_snapshots())
@@ -59,14 +72,26 @@ class TestPretty:
 
 
 class TestJson:
-    def test_shape_matches_the_documented_fields(self, capsys):
+    """The output is an envelope: {at, directive, providers}.
+
+    A subscriber steering its own rate wants one instruction, not a table it
+    has to reduce itself, so the directive is hoisted to the top level.
+    """
+
+    def test_envelope_shape(self, capsys):
         assert main(["--demo", "--json"]) == 0
         payload = json.loads(capsys.readouterr().out)
-        assert [p["provider"] for p in payload] == ["claude", "codex"]
-        gauge = payload[0]["gauges"][0]
+        assert set(payload) == {"at", "directive", "providers"}
+        assert [p["provider"] for p in payload["providers"]] == ["claude", "codex"]
+
+    def test_gauge_fields(self, capsys):
+        main(["--demo", "--json"])
+        payload = json.loads(capsys.readouterr().out)
+        gauge = payload["providers"][0]["gauges"][0]
         assert set(gauge) == {
             "window", "scope", "label", "percent", "severity",
             "runsOutFirst", "resetsAt", "secondsRemaining",
+            "windowSeconds", "pace",
         }
 
     def test_seconds_remaining_is_precomputed(self, capsys):
@@ -74,8 +99,48 @@ class TestJson:
         payload = json.loads(capsys.readouterr().out)
         assert all(
             g["secondsRemaining"] > 0
-            for p in payload for g in p["gauges"]
+            for p in payload["providers"] for g in p["gauges"]
         )
+
+    def test_pace_fields(self, capsys):
+        main(["--demo", "--json"])
+        payload = json.loads(capsys.readouterr().out)
+        pace = payload["providers"][0]["gauges"][0]["pace"]
+        assert set(pace) == {
+            "verdict", "ratio", "projectedUsagePercent", "rateAdjustment",
+            "elapsedPercent", "exhaustsInSeconds", "exhaustsBeforeReset",
+            "advice",
+        }
+
+
+class TestDirective:
+    """The signal a downstream service subscribes to."""
+
+    def _directive(self, capsys):
+        main(["--demo", "--json"])
+        return json.loads(capsys.readouterr().out)["directive"]
+
+    def test_carries_a_usable_rate_multiplier(self, capsys):
+        directive = self._directive(capsys)
+        assert isinstance(directive["rateAdjustment"], float)
+        assert 0.0 <= directive["rateAdjustment"] <= 10.0
+
+    def test_names_the_constraint_it_came_from(self, capsys):
+        directive = self._directive(capsys)
+        assert directive["constraint"]["provider"] in {"claude", "codex"}
+        assert directive["constraint"]["label"]
+
+    def test_picks_the_worst_pace_not_the_fullest_bar(self, capsys):
+        """82% with 5 days left outranks 91% with 18 hours left."""
+        directive = self._directive(capsys)
+        assert directive["verdict"] == "slow_down"
+        assert directive["constraint"]["provider"] == "codex"
+        assert directive["constraint"]["percent"] == 82.0
+
+    def test_ignores_windows_too_new_to_judge(self, capsys):
+        """A window minutes old produces a wild ratio; it must not win."""
+        directive = self._directive(capsys)
+        assert "Spark" not in directive["constraint"]["label"]
 
 
 class TestExitCodes:

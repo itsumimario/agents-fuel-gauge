@@ -70,10 +70,12 @@ uv tool install git+https://github.com/itsumimario/agents-fuel-gauge.git
   different places and neither shows the other. This shows all of it, live.
 - **It shows the limits other tools hide** — including per-model weekly caps,
   which can sit at 91% while the headline number still reads a comfortable 50%.
+- **It tells you whether you're burning too fast**, not just how full the bar
+  is. 91% used is fine with an hour left and a crisis with four days left.
 - **One-shot from the command line.** `afg --check` prints once and exits, for
   scripts, prompts, cron, and CI.
 - **A tiny JSON service for anything else.** `afg --json` gives other tools a
-  clean, normalised feed of both providers.
+  clean, normalised feed — and a single rate instruction they can act on.
 
 ## Usage
 
@@ -82,12 +84,24 @@ afg                      # live dashboard
 afg --check              # one-shot, plain text
 afg --check --pretty     # one-shot, with bars
 afg --json               # one-shot, machine-readable
+afg --watch --json       # keep emitting, one JSON object per line
 afg --demo               # synthetic data, no accounts needed
 afg --update             # update to the latest version
 ```
 
 **`◆` marks the one that runs out first** — the limit that will actually stop
 you working. It isn't always the fullest-looking bar.
+
+**Pace marks say whether you're ahead of budget**, which the percentage alone
+never tells you:
+
+| | |
+| --- | --- |
+| `↓` | under budget — you have room |
+| `·` | on budget — this rate lasts exactly to the reset |
+| `↑` | over budget — you'll run out early at this rate |
+| `◦` | window too new to judge |
+| `✗` | spent |
 
 Each panel shows its own last-updated age, because the two providers are
 fetched independently and one can go stale while the other keeps refreshing.
@@ -107,20 +121,27 @@ blanks a panel — the last known numbers stay up behind a warning.
 
 ```console
 $ afg --check
-claude  5h  all-models           34%  2h10m   -
-claude  7d  all-models           68%  18h07m  -
-claude  7d  Fable                91%  18h07m  FIRST
-codex   7d  all-models           82%  2d04h   FIRST
-codex   7d  GPT-5.3-Codex-Spark  12%  6d22h   -
+claude  5h  all-models           34%  2h10m   -      spare_capacity
+claude  7d  all-models           68%  18h07m  -      spare_capacity
+claude  7d  Fable                91%  18h07m  FIRST  on_track
+codex   7d  all-models           82%  5d01h   FIRST  slow_down
+codex   7d  GPT-5.3-Codex-Spark  12%  6d21h   -      too_early
 ```
 
-Columns are `provider · window · scope · used · resets-in · flags`. Every field
-is a single whitespace-free token, so awk columns mean what you'd expect:
+Columns are `provider · window · scope · used · resets-in · flags · pace`.
+Every field is a single whitespace-free token, so awk columns mean what you'd
+expect:
 
 ```sh
-afg --check | awk '$4+0 > 80'      # anything over 80% used
-afg --check | awk '$6 ~ /FIRST/'   # only what stops you first
+afg --check | awk '$4+0 > 80'          # anything over 80% used
+afg --check | awk '$6 ~ /FIRST/'       # only what stops you first
+afg --check | awk '$7 == "slow_down"'  # only what you're overspending
 ```
+
+Note the difference between columns 4 and 7 in that output: Fable at **91%** is
+`on_track` because the week is nearly over, while Codex at **82%** is
+`slow_down` because five days remain. The percentage alone would have ranked
+them the other way round.
 
 Exits non-zero if a provider couldn't be read.
 
@@ -128,47 +149,74 @@ Add `--pretty` for the same data with bars, when a human is reading.
 
 ### JSON
 
-`afg --json` emits one object per provider, both normalised into the same
-shape so consumers never need to know which API a number came from.
+`afg --json` emits an envelope: a single **directive** to act on, plus the full
+per-provider detail if you want to look closer. Both providers are normalised
+into the same shape, so consumers never need to know which API a number came
+from.
 
 ```json
-[
-  {
-    "provider": "claude",
-    "plan": "Max 20x",
-    "capturedAt": "2026-08-05T23:17:04.470132+00:00",
-    "error": null,
-    "stale": false,
-    "gauges": [
-      {
-        "window": "5h",
-        "scope": "all models",
-        "label": "5h all models",
-        "percent": 34.0,
-        "severity": "normal",
-        "runsOutFirst": false,
-        "resetsAt": "2026-08-06T01:28:04.470132+00:00",
-        "secondsRemaining": 7859
-      }
-    ]
-  }
-]
+{
+  "at": "2026-08-06T03:41:12.008431+00:00",
+  "directive": {
+    "verdict": "slow_down",
+    "rateAdjustment": 0.051,
+    "advice": "slow to 5% of current rate",
+    "constraint": {
+      "provider": "codex",
+      "label": "7d all models",
+      "percent": 98.0,
+      "severity": "critical",
+      "secondsRemaining": 172163
+    },
+    "projectedUsagePercent": 137.0,
+    "exhaustsInSeconds": 8829
+  },
+  "providers": [ … ]
+}
 ```
+
+#### The directive
+
+The one thing most consumers need. `rateAdjustment` is a plain multiplier —
+apply it to your current request rate and you land exactly on empty at reset.
 
 | Field | Meaning |
 | ----- | ------- |
-| `window` | `5h`, `7d`, … — the period the limit covers |
-| `scope` | `all models`, or a specific model with its own cap |
-| `percent` | 0–100, how much of that window is used |
-| `severity` | `normal` / `warning` / `critical` |
-| `runsOutFirst` | the limit that stops you before the others |
-| `secondsRemaining` | until reset, pre-computed so you don't parse dates |
-| `stale` | carried over from an earlier poll after a failure |
-| `error` | non-null if this provider couldn't be read |
+| `verdict` | `slow_down` / `on_track` / `spare_capacity` / `exhausted` / `unknown` |
+| `rateAdjustment` | multiply your current rate by this. `0.05` = throttle to 5%; `1.9` = room for nearly double |
+| `constraint` | which limit this came from — always the one under the most pace pressure |
+| `projectedUsagePercent` | where you land at reset if nothing changes. Over 100 means you run out early |
+| `exhaustsInSeconds` | how long until empty at the current rate, or `null` if you'd survive |
+
+A window that has only just opened is never chosen as the constraint: minutes
+of data divide into a wild ratio, and throttling on that would be worse than
+doing nothing. If nothing is judgeable yet, `verdict` is `unknown` and
+`rateAdjustment` is `null` — hold your current rate.
+
+#### Per-gauge detail
+
+Each gauge under `providers[].gauges[]` carries `window`, `scope`, `label`,
+`percent`, `severity`, `runsOutFirst`, `resetsAt`, `secondsRemaining`,
+`windowSeconds`, and its own `pace` object with the same shape as the directive.
 
 ```sh
-afg --json | jq -r '.[].gauges[] | select(.runsOutFirst) | "\(.label) \(.percent)%"'
+afg --json | jq -r '.directive.rateAdjustment'
+afg --json | jq -r '.providers[].gauges[] | select(.runsOutFirst) | "\(.label) \(.percent)%"'
 ```
+
+### Subscribing
+
+`afg --watch --json` keeps sampling and emits **one JSON object per line**,
+flushed immediately — so anything that can read a pipe can subscribe:
+
+```sh
+afg --watch --json -i 60 | while read -r line; do
+  factor=$(jq -r '.directive.rateAdjustment' <<<"$line")
+  echo "adjusting request rate by ${factor}x"
+done
+```
+
+That's the whole mechanism: no daemon, no socket, no broker.
 
 ## Updating
 
