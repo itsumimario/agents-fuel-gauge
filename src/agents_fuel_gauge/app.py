@@ -10,9 +10,9 @@ from textual.containers import Vertical, VerticalScroll
 from textual.widgets import Footer, Header, Static
 
 from .models import (
+    PACE_ARROW,
     Gauge,
     ProviderSnapshot,
-    directives,
     format_age,
     format_countdown,
     format_remaining,
@@ -28,6 +28,27 @@ BAR_EMPTY = "░"
 LABEL_WIDTH = 24
 MIN_LABEL = 8
 MIN_BAR = 6
+SEP = "  "
+
+# What a row can show, richest first, as the columns it draws. Both forms of
+# "when does it reset" appear wherever they fit: the wall-clock moment to plan
+# around, and the distance to it. The absolute time is the first to go when
+# space runs short, because the relative one still answers "have I got time for
+# this" — and the pace column outlives both, because what to do about a meter
+# outranks exactly when it resets.
+ROW_VARIANTS = (
+    (("pct", "reset_full", "relative", "pace_full"), MIN_LABEL),
+    (("pct", "reset_short", "relative", "pace_full"), MIN_LABEL),
+    (("pct", "reset_time", "relative", "pace_full"), MIN_LABEL),
+    (("pct", "relative", "pace_full"), MIN_LABEL),
+    # Below here the magnitude no longer fits. The bare arrow still says which
+    # way to move, which is most of the value.
+    (("pct", "relative", "pace_mark"), MIN_LABEL),
+    (("pct", "compact"), MIN_LABEL),
+    (("pct", "compact"), 3),
+    (("compact",), 0),
+    (("coarse",), 0),
+)
 
 SEVERITY_COLOR = {
     "normal": "green",
@@ -35,22 +56,38 @@ SEVERITY_COLOR = {
     "critical": "red",
 }
 
-# Drift against budget, which is a different axis from how full the bar is:
-# a nearly-full bar late in its window is fine, an early one is not.
-PACE_MARK = {
-    "slow_down": "↑ ",
-    "spare_capacity": "↓ ",
-    "on_track": "· ",
-    "exhausted": "✗ ",
-    "too_early": "◦ ",
-}
+# Colour reinforces the arrow rather than repeating the bar: red is "ease off",
+# green is "there is room". Note this is a different axis from bar colour, which
+# is about how full the meter is — a red bar with a green arrow is a real and
+# useful state (nearly spent, but the window resets before it matters).
 PACE_COLOR = {
     "slow_down": "bold red",
+    "exhausted": "bold red",
     "spare_capacity": "green",
     "on_track": "dim",
-    "exhausted": "bold red",
     "too_early": "dim",
 }
+
+# Every glyph that can appear in a row, spelled out once beneath the panels.
+# The rule is simple: any symbol on screen has to be decodable from the screen.
+LEGEND = (
+    ("slow_down", "slow down"),
+    ("spare_capacity", "speed up"),
+    ("on_track", "on budget"),
+    ("exhausted", "spent"),
+    ("too_early", "too new to judge"),
+)
+LEGEND_NOTE = (
+    "the % is how far to change that meter's average rate so far, "
+    "so it lasts until it resets"
+)
+
+
+def color_of(gauge: Gauge) -> str:
+    """Bar colour tracks how full the meter is, which is a different axis from
+    the pace arrow's colour — a red bar with a green arrow is a real state:
+    nearly spent, but the window resets before that matters."""
+    return SEVERITY_COLOR.get(gauge.severity, "green")
 
 
 class GaugeBar(Static):
@@ -64,116 +101,155 @@ class GaugeBar(Static):
         self.gauge = gauge
         self.refresh()
 
-    def render(self) -> Text:
-        """Lay the row out by priority, not by fixed columns.
+    def cells(self) -> dict[str, tuple[str, str, str]]:
+        """Every value this row could print, as `key -> (text, style, align)`.
 
-        The reset time is the whole reason to look at a gauge, and it used to
-        be the first thing lost: the bar had a minimum width, so on a narrow
-        terminal the row overflowed and the right-hand edge — the countdown —
-        got cropped. The bar is the least information-dense element here, so it
-        is now the one that yields. It shrinks, then disappears entirely, before
-        anything you actually read is touched.
+        Unpadded on purpose. Widths are a property of the *panel*, not of one
+        row — see `render` — so each row publishes its raw values and lets the
+        panel decide how wide each column has to be.
         """
         gauge = self.gauge
-        color = SEVERITY_COLOR.get(gauge.severity, "green")
         pace = gauge.pace()
-        pace_mark = PACE_MARK.get(pace.verdict, "  ") if pace else "  "
         pace_style = PACE_COLOR.get(pace.verdict, "dim") if pace else "dim"
 
+        # The arrow is an instruction, and an instruction without a size is only
+        # half of one — "slow down" begs "by how much?". Where there is no
+        # magnitude — on budget, spent, window too new — the arrow stands alone
+        # rather than spelling itself out: "· on budget" is eleven columns
+        # saying "do nothing", and it was buying them by pushing the reset time
+        # off the row. The legend below the panels decodes the glyph anyway.
+        arrow = pace.arrow if pace else ""
+        sized = pace and pace.change_percent is not None
         remaining = gauge.seconds_remaining()
-        relative = format_remaining(remaining)
-        reset_full = format_reset_at(gauge.resets_at, "full")
-        reset_short = format_reset_at(gauge.resets_at, "short")
-        reset_time = format_reset_at(gauge.resets_at, "time")
-
-        countdown = format_countdown(remaining)
-        compact = countdown.replace(" ", "")
+        compact = format_countdown(remaining).replace(" ", "")
         # Coarsest readable form for the very narrowest terminals: the leading
-        # unit only, "18h 07m" -> "18h". Less precise, but "roughly 18 hours"
+        # unit only, "18h07m" -> "18h". Less precise, but "roughly 18 hours"
         # beats no reset time at all, which is what cropping leaves you with.
         leading = re.match(r"\d+[dhms]", compact)
-        coarse = leading.group(0) if leading else compact
-        marker = "◆" if gauge.active_limit else " "
+
+        return {
+            "pct": (f"{gauge.percent:.0f}%", f"bold {color_of(gauge)}", ">"),
+            "reset_full": (format_reset_at(gauge.resets_at, "full"), "dim", "<"),
+            "reset_short": (format_reset_at(gauge.resets_at, "short"), "dim", "<"),
+            "reset_time": (format_reset_at(gauge.resets_at, "time"), "dim", "<"),
+            "relative": (format_remaining(remaining), "dim", ">"),
+            "pace_full": (
+                f"{arrow} {pace.change_label}" if sized else arrow,
+                pace_style,
+                "<",
+            ),
+            "pace_mark": (arrow, pace_style, "<"),
+            "compact": (compact, "dim", ">"),
+            "coarse": (leading.group(0) if leading else compact, "dim", ">"),
+        }
+
+    def _siblings(self) -> list["GaugeBar"]:
+        """Every row that has to line up with this one.
+
+        Screen-wide rather than panel-wide. The two boxes are the same width
+        and sit one above the other, so they read as a single instrument: a bar
+        that starts three columns further left in the Codex box than in the
+        Claude box looks like a rendering fault, not like two tables. Rows of a
+        different width are excluded so nothing is measured against a column
+        budget it does not share.
+        """
+        try:
+            rows = [
+                w for w in self.screen.query(GaugeBar)
+                if w.size.width == self.size.width
+            ]
+        except Exception:  # not mounted yet; measure against ourselves alone
+            rows = []
+        return rows or [self]
+
+    def render(self) -> Text:
+        """Lay the row out by priority, with columns sized across the panel.
+
+        Two rules, and they interact:
+
+        First, priority over fixed columns. The reset time is the whole reason
+        to look at a gauge, and it used to be the first thing lost: the bar had
+        a minimum width, so on a narrow terminal the row overflowed and the
+        right-hand edge got cropped. The bar is the least information-dense
+        element here, so it is the one that yields — it shrinks, then vanishes,
+        before anything you actually read is touched.
+
+        Second, the panel decides, not the row. Each row used to pick its own
+        variant, which was fine while every row's tail was the same width. Once
+        the pace column carried a magnitude that was no longer true: a row
+        reading "· " had eight columns spare that a row reading "↓ by 92%" did
+        not, so it chose a richer variant, and the bars and percentages in a
+        single box no longer lined up. A jagged table reads as a broken one. So
+        the variant is chosen once for the whole panel — the first that fits
+        *every* row — and each column is padded to the widest value in it.
+        """
         width = self.size.width
-        pct_style = f"bold {color}"
+        rows = [w.cells() for w in self._siblings()]
+        mine = self.cells()
 
-        # Tail variants, richest first, each as the exact segments that will be
-        # drawn. Measuring the same list we render from is what keeps the two
-        # in step — computing a width separately from the output invites them
-        # to drift apart by a space, which is precisely how the countdown got
-        # cropped before.
-        # Both forms of "when does it reset" are shown wherever they fit: the
-        # wall-clock moment to plan around, and the distance to it. The
-        # absolute time is the first to go when space runs short, because the
-        # relative one still answers "have I got time for this".
-        variants = (
-            ([(f"{gauge.percent:>4.0f}%", pct_style),
-              (f"  {reset_full}", "dim"),
-              (f"  {relative:>6}", "dim"),
-              (f" {pace_mark}", pace_style)], 2, MIN_LABEL),
-            ([(f"{gauge.percent:>4.0f}%", pct_style),
-              (f"  {reset_short}", "dim"),
-              (f"  {relative:>6}", "dim"),
-              (f" {pace_mark}", pace_style)], 2, MIN_LABEL),
-            ([(f"{gauge.percent:>4.0f}%", pct_style),
-              (f"  {reset_time}", "dim"),
-              (f" {relative:>6}", "dim"),
-              (f" {pace_mark}", pace_style)], 2, MIN_LABEL),
-            ([(f"{gauge.percent:>4.0f}%", pct_style),
-              (f"  {relative}", "dim"),
-              (f" {pace_mark}", pace_style)], 2, MIN_LABEL),
-            ([(f"{gauge.percent:>4.0f}%", pct_style),
-              (f" {compact}", "dim")], 2, MIN_LABEL),
-            ([(f"{gauge.percent:.0f}%", pct_style),
-              (f" {compact}", "dim")], 0, 3),
-            ([(compact, "dim")], 0, 0),
-            ([(coarse, "dim")], 0, 0),
-        )
+        def widths(keys):
+            return [max(len(r[k][0]) for r in rows) for k in keys]
 
-        tail, marker_width = variants[-1][0], 0
-        for segments, mark_w, min_label in variants:
-            if mark_w + min_label + sum(len(t) for t, _ in segments) <= width:
-                tail, marker_width = segments, mark_w
+        keys, cols = ROW_VARIANTS[-1][0], None
+        for candidate, min_label in ROW_VARIANTS:
+            measured = widths(candidate)
+            # The gap before the tail only exists if there is a label to gap
+            # from. The last-resort variants draw the countdown alone, and
+            # charging them for a separator they never print is what pushed a
+            # 5-char row into a 4-column widget.
+            gap = len(SEP) if min_label else 0
+            spans = sum(measured) + len(SEP) * (len(candidate) - 1)
+            if min_label + gap + spans <= width:
+                keys, cols = candidate, measured
                 break
+        if cols is None:
+            cols = widths(keys)
 
-        tail_width = sum(len(t) for t, _ in tail)
-        available = max(0, width - marker_width - tail_width)
+        tail_width = sum(cols) + len(SEP) * (len(keys) - 1)
+        available = max(0, width - tail_width)
+        # Whatever is left has to cover the label, the bar, and the gap.
+        block = max(0, available - len(SEP)) if available > len(SEP) else 0
 
-        if available >= LABEL_WIDTH + MIN_BAR + 1:
+        if block >= LABEL_WIDTH + MIN_BAR + 1:
             label_width = LABEL_WIDTH
-            bar_width = available - label_width - 1
-        elif available >= MIN_LABEL + MIN_BAR + 1:
+            bar_width = block - label_width - 1
+        elif block >= MIN_LABEL + MIN_BAR + 1:
             bar_width = MIN_BAR
-            label_width = available - bar_width - 1
+            label_width = block - bar_width - 1
         else:
             # Too tight for any bar. Let the label shrink past its usual floor
             # rather than push the countdown off the edge.
             bar_width = 0
-            label_width = available
+            label_width = block
 
-        label = gauge.label
+        label = self.gauge.label
         if label_width and len(label) > label_width:
             # "text…" is one char longer than the text it replaces, so with a
             # single column to spend the ellipsis has to stand alone.
             label = (label[: label_width - 1] + "…") if label_width >= 2 else "…"
 
         text = Text(no_wrap=True, overflow="crop")
-        if marker_width:
-            text.append(
-                f"{marker} ", style=f"bold {color}" if gauge.active_limit else "dim"
-            )
         if label_width:
-            text.append(
-                f"{label:<{label_width}}",
-                style="bold" if gauge.active_limit else "",
-            )
+            # Every row is styled identically. `active_limit` used to earn a ◆
+            # and a bold label, but a symbol whose meaning is nowhere on screen
+            # is a question, not information. The flag still ships in `--check`
+            # (as the word ACTIVE) and in `--json`, where it can be spelled out.
+            text.append(f"{label:<{label_width}}")
         if bar_width:
-            filled = min(bar_width, round(gauge.percent / 100 * bar_width))
+            filled = min(bar_width, round(self.gauge.percent / 100 * bar_width))
             text.append(" ")
-            text.append(BAR_FULL * filled, style=color)
+            text.append(BAR_FULL * filled, style=color_of(self.gauge))
             text.append(BAR_EMPTY * (bar_width - filled), style="bright_black")
-        for segment, style in tail:
-            text.append(segment, style=style)
+        drawn = bool(label_width or bar_width)
+        for index, (key, column) in enumerate(zip(keys, cols)):
+            value, style, align = mine[key]
+            last = index == len(keys) - 1
+            # Padding the final left-aligned column would only add invisible
+            # trailing spaces, and the measurement above already reserved them.
+            padded = value if (last and align == "<") else (
+                value.rjust(column) if align == ">" else value.ljust(column)
+            )
+            text.append((SEP if index or drawn else "") + padded, style=style)
         return text
 
 
@@ -262,43 +338,30 @@ class ProviderPanel(Vertical):
         await self.mount_all(list(self._rows()))
 
 
-class StatusLine(Static):
-    """Per-meter advice, one line each, every line naming its own meter.
+class Legend(Static):
+    """One key for both panels, under both panels.
 
-    This used to rank all gauges together and announce a single winner as
-    "runs out first", with one rate multiplier. Both halves were wrong. The
-    ranking implied a prediction the data cannot make — `used / elapsed` is an
-    average over the whole window, so a meter burned hard days ago and idle
-    since is indistinguishable from one burning steadily now, and it would be
-    named the winner on the strength of usage that had already stopped. And a
-    bare multiplier read as guidance for everything you were running, when it
-    only ever described one window.
-
-    So: no cross-provider ranking, and no unattributed instruction.
+    This replaces a prose block that sat above the panels and restated, in
+    sentences, what the rows were already showing — and restated it badly,
+    because the sentence lived at the top while the meter it described lived
+    somewhere below it, so you had to hold a name in your head and go looking.
+    Put the instruction on the row and the key underneath, and neither problem
+    exists: nothing has to be matched up, and the key is a fixed cost that does
+    not grow with the number of meters.
     """
 
-    def set_snapshots(self, snapshots: list[ProviderSnapshot]) -> None:
-        rows = [d for d in directives(snapshots) if d["actionable"]]
-        # Only the meters actually drifting are worth a line; listing the
-        # healthy ones buries the two that matter.
-        notable = [d for d in rows if d["verdict"] in ("slow_down", "exhausted")]
-
+    def render(self) -> Text:
+        # Wrapping, not truncating — a legend cut in half is a legend that
+        # documents some of the symbols, which is arguably worse than none.
         text = Text(no_wrap=False, overflow="fold")
-        if not rows:
-            text.append("no pace estimate yet", style="dim")
-        elif not notable:
-            text.append("every meter is within its budget", style="green")
-        else:
-            for index, row in enumerate(notable):
-                if index:
-                    text.append("\n")
-                name = row["provider"].capitalize()
-                text.append(f"{name} {row['label']}", style="bold")
-                text.append(": ", style="dim")
-                text.append(
-                    row["advice"], style=PACE_COLOR.get(row["verdict"], "dim")
-                )
-        self.update(text)
+        for verdict, meaning in LEGEND:
+            text.append(PACE_ARROW[verdict], style=PACE_COLOR[verdict])
+            text.append(f" {meaning}   ", style="dim")
+        # Its own line, so the break lands where it was chosen rather than
+        # wherever the key happens to run out of terminal.
+        text.append("\n")
+        text.append(LEGEND_NOTE, style="dim")
+        return text
 
 
 class FuelGaugeApp(App):
@@ -324,8 +387,10 @@ class FuelGaugeApp(App):
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
-        yield StatusLine(Text("loading…", style="dim"), id="status")
         yield VerticalScroll(id="panels")
+        # Below both panels, as one key for both, so it reads as a key rather
+        # than as a message about whichever panel it happens to sit next to.
+        yield Legend(id="legend")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -363,7 +428,6 @@ class FuelGaugeApp(App):
             bar.refresh()
         for panel in self.query(ProviderPanel):
             panel.refresh_titles()  # keeps each panel's "12s ago" honest
-        self.query_one(StatusLine).set_snapshots(self.snapshots)
 
     async def poll(self) -> None:
         try:
@@ -387,7 +451,6 @@ class FuelGaugeApp(App):
             merged.append(snapshot)
 
         self.snapshots = merged
-        self.query_one(StatusLine).set_snapshots(self.snapshots)
 
         # No global "updated at" here — each panel reports its own age, because
         # providers are fetched concurrently and one can go stale while the

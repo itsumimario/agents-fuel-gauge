@@ -34,6 +34,19 @@ MAX_RATE_ADJUSTMENT = 10.0
 # is no rate worth estimating, so say so instead of guessing.
 MIN_ELAPSED_FRACTION = 0.05
 
+# The arrow points the way you should move, not the way the number is moving.
+# An earlier version pointed the other way — up meant "you are running hot" —
+# which is a status report, and a status report is exactly what an arrow is bad
+# at. Nobody reads a glyph and thinks "that describes my drift"; they read it as
+# an instruction. So it is one: down means ease off, up means there is room.
+PACE_ARROW = {
+    "slow_down": "↓",
+    "exhausted": "✗",
+    "spare_capacity": "↑",
+    "on_track": "·",
+    "too_early": "◦",
+}
+
 
 def derive_severity(percent: float) -> str:
     """Fallback for providers that do not grade their own limits (Codex)."""
@@ -153,7 +166,19 @@ def directives(
                     "severity": gauge.severity,
                     "verdict": pace.verdict,
                     "actionable": pace.actionable,
+                    "direction": pace.direction,
                     "rateAdjustment": round(pace.rate_adjustment, 3),
+                    # The same instruction as a signed change, which is what the
+                    # arrow on screen shows: -93 means ease off by 93%.
+                    "changePercent": (
+                        None
+                        if pace.change_percent is None
+                        else round(
+                            pace.change_percent
+                            * (-1 if pace.direction == "down" else 1),
+                            1,
+                        )
+                    ),
                     "advice": pace.advice,
                     "projectedUsagePercent": (
                         None
@@ -200,6 +225,58 @@ class Pace:
         return self.verdict in self.ACTIONABLE
 
     @property
+    def arrow(self) -> str:
+        return PACE_ARROW.get(self.verdict, " ")
+
+    @property
+    def direction(self) -> str:
+        """Which way to move: `down`, `up`, or `hold`."""
+        if self.verdict in ("slow_down", "exhausted"):
+            return "down"
+        if self.verdict == "spare_capacity":
+            return "up"
+        return "hold"
+
+    @property
+    def change_percent(self) -> float | None:
+        """How far to move the rate, as a percentage of itself.
+
+        Deliberately a *change*, not the multiplier. "Slow to 7% of your average
+        rate" and "slow down by 93%" are the same instruction, but only the
+        second one can be read at a glance next to an arrow — the first makes
+        you subtract from 100 before you know which way to go.
+
+        None where no change is called for, so a caller can tell "no advice"
+        from "advice of zero".
+        """
+        if self.verdict == "slow_down":
+            return (1.0 - self.rate_adjustment) * 100.0
+        if self.verdict == "spare_capacity":
+            return (self.rate_adjustment - 1.0) * 100.0
+        return None
+
+    @property
+    def at_cap(self) -> bool:
+        """True when the multiplier hit `MAX_RATE_ADJUSTMENT` and is a floor.
+
+        Happens on a barely-touched meter, where the honest answer is "far more
+        room than you are using" rather than any particular number.
+        """
+        return self.rate_adjustment >= MAX_RATE_ADJUSTMENT
+
+    @property
+    def change_label(self) -> str:
+        """The short magnitude drawn beside the arrow: `by 93%`."""
+        change = self.change_percent
+        if change is None:
+            return {
+                "exhausted": "spent",
+                "on_track": "on budget",
+                "too_early": "too new",
+            }.get(self.verdict, "")
+        return f"by {change:.0f}%{'+' if self.at_cap else ''}"
+
+    @property
     def advice(self) -> str:
         """Always says "its average rate", never "current rate".
 
@@ -208,20 +285,34 @@ class Pace:
         and idle since reports the same figure as one burning steadily now.
         Wording that claims otherwise would overstate what one snapshot knows.
         """
+        # Both readings, because they answer different questions: the change is
+        # what you act on, the multiplier is what a scheduler multiplies by.
+        if self.verdict == "slow_down":
+            return (
+                f"slow this meter down {self.change_label} — to "
+                f"{self.rate_adjustment:.0%} of its average rate"
+            )
+        if self.verdict == "spare_capacity":
+            return (
+                f"this meter has room to speed up {self.change_label} — to "
+                f"{self.rate_adjustment:.1f}x its average rate"
+            )
         return {
             "exhausted": "spent; wait for its reset",
-            "slow_down": f"slow this meter to {self.rate_adjustment:.0%} of its average rate",
             "on_track": "this meter's average rate lasts to its reset",
-            "spare_capacity": f"room for {self.rate_adjustment:.1f}x this meter's average rate",
             "too_early": "window too new to judge this meter",
         }[self.verdict]
 
     def to_dict(self) -> dict:
         return {
             "verdict": self.verdict,
+            "direction": self.direction,
             "ratio": round(self.ratio, 3),
             "projectedUsagePercent": round(self.ratio * 100, 1),
             "rateAdjustment": round(self.rate_adjustment, 3),
+            "changePercent": (
+                None if self.change_percent is None else round(self.change_percent, 1)
+            ),
             "elapsedPercent": round(self.elapsed_fraction * 100, 1),
             "exhaustsInSeconds": self.exhausts_in_seconds,
             "exhaustsBeforeReset": self.exhausts_before_reset,
@@ -239,15 +330,18 @@ class Gauge:
     resets_at: datetime | None = None
     severity: str = "normal"
     active_limit: bool = False
+    """The provider says this limit is the one currently in force.
+
+    Anthropic reports it directly as `is_active`; OpenAI reports nothing of the
+    kind, so Codex gauges always carry False. Reported, never inferred. It shows
+    up as the word ACTIVE in `--check` and as `activeLimit` in `--json`; the TUI
+    no longer draws a symbol for it, because a symbol nobody can decode is worse
+    than no symbol.
+    """
     window_seconds: int | None = None
     """Length of the window. Carried from the provider rather than parsed back
     out of the `window` label, which would break on any format we didn't
     anticipate."""
-    """The limit that will actually stop you before any of the others do.
-
-    Anthropic reports this directly as `is_active`; OpenAI does not, so for
-    Codex it is inferred from whichever bar is fullest.
-    """
 
     @property
     def label(self) -> str:

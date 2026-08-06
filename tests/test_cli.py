@@ -5,6 +5,7 @@ through awk), so its shape is pinned here rather than left to drift.
 """
 
 import json
+import re
 
 import pytest
 
@@ -14,13 +15,13 @@ from agents_fuel_gauge.models import ProviderSnapshot
 
 
 class TestPlain:
-    def test_one_row_per_gauge_with_exactly_seven_whitespace_free_columns(self):
+    def test_one_row_per_gauge_with_whitespace_free_columns(self):
         """Any field containing a space would shift every awk column after it."""
         out = render_plain(demo_snapshots())
         rows = [r for r in out.splitlines() if r.strip()]
         assert len(rows) == 5
         for row in rows:
-            assert len(row.split()) == 9, row
+            assert len(row.split()) == 10, row
 
     def test_new_columns_are_appended_not_inserted(self):
         """Columns 1-6 are a published interface; additions must not shift them."""
@@ -30,10 +31,30 @@ class TestPlain:
             assert cells[1].endswith(("h", "d"))         # $2 window
             assert cells[3].endswith("%")                # $4 used
             assert cells[5] in {"-", "ACTIVE", "STALE", "ACTIVE,STALE"}  # $6 flags
-            assert cells[6] in {                          # $7 pace, new
+            assert cells[6] in {                          # $7 pace verdict
                 "-", "slow_down", "on_track", "spare_capacity",
                 "exhausted", "too_early",
             }
+
+    def test_change_column_is_signed_and_awk_friendly(self):
+        """`awk '$10+0 < -50'` must select the meters needing real throttling."""
+        rows = [r.split() for r in render_plain(demo_snapshots()).splitlines() if r.strip()]
+        for cells in rows:
+            cell = cells[9]
+            assert cell == "-" or cell[0] in "+-", cell
+        throttle = [r for r in rows if r[9] != "-" and float(r[9].strip("+-%")) and r[9][0] == "-"]
+        assert throttle, "demo data should include a meter told to slow down"
+
+    def test_sign_matches_the_verdict(self):
+        """A negative change and a `spare_capacity` verdict would contradict."""
+        rows = [r.split() for r in render_plain(demo_snapshots()).splitlines() if r.strip()]
+        for cells in rows:
+            if cells[9] == "-":
+                continue
+            if cells[6] == "slow_down":
+                assert cells[9].startswith("-"), cells
+            if cells[6] == "spare_capacity":
+                assert cells[9].startswith("+"), cells
 
     def test_marks_what_active_limit_without_symbols(self):
         out = render_plain(demo_snapshots())
@@ -65,6 +86,27 @@ class TestPretty:
         out = render_pretty(demo_snapshots(), color=False)
         assert "█" in out and "░" in out
         assert "average rate so far" in out
+
+    def test_every_arrow_it_can_draw_is_in_the_legend(self):
+        """Same rule as the TUI: no glyph without a key on the same screen."""
+        out = render_pretty(demo_snapshots(), color=False)
+        legend = out.rsplit("\n\n", 1)[-1]
+        for arrow in ("↓", "↑", "·", "✗", "◦"):
+            assert arrow in legend
+
+    def test_rows_carry_the_magnitude_not_just_the_direction(self):
+        """"Slow down" without "by how much" is half an instruction."""
+        rows = [
+            line for line in render_pretty(demo_snapshots(), color=False).splitlines()
+            if "█" in line or "░" in line
+        ]
+        assert rows
+        assert any(re.search(r"[↑↓] by \d+%", line) for line in rows)
+
+    def test_no_prose_advice_block(self):
+        """Advice now rides on the row it applies to, not in a paragraph."""
+        out = render_pretty(demo_snapshots(), color=False)
+        assert "this meter" not in out
 
     def test_no_color_means_no_escapes(self):
         assert "\033" not in render_pretty(demo_snapshots(), color=False)
@@ -109,9 +151,9 @@ class TestJson:
         payload = json.loads(capsys.readouterr().out)
         pace = payload["providers"][0]["gauges"][0]["pace"]
         assert set(pace) == {
-            "verdict", "ratio", "projectedUsagePercent", "rateAdjustment",
-            "elapsedPercent", "exhaustsInSeconds", "exhaustsBeforeReset",
-            "advice",
+            "verdict", "direction", "ratio", "projectedUsagePercent",
+            "rateAdjustment", "changePercent", "elapsedPercent",
+            "exhaustsInSeconds", "exhaustsBeforeReset", "advice",
         }
 
 
@@ -133,6 +175,19 @@ class TestDirectives:
     def test_each_carries_its_own_rate_multiplier(self, capsys):
         for row in self._rows(capsys):
             assert 0.0 <= row["rateAdjustment"] <= 10.0
+
+    def test_each_carries_a_signed_change_matching_its_direction(self, capsys):
+        """The same instruction the arrow draws, in a form a service can act on."""
+        for row in self._rows(capsys):
+            if row["changePercent"] is None:
+                # No magnitude exists for these: nothing to scale (exhausted)
+                # or nothing worth acting on (on budget, window too new).
+                assert row["verdict"] in ("exhausted", "on_track", "too_early")
+                continue
+            if row["direction"] == "down":
+                assert row["changePercent"] < 0
+            else:
+                assert row["changePercent"] > 0
 
     def test_each_carries_its_own_reset_time(self, capsys):
         for row in self._rows(capsys):

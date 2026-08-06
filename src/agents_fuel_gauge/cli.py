@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 
 from . import BANNER, cache
 from .models import (
+    PACE_ARROW,
     ProviderSnapshot,
     directives,
     format_age,
@@ -40,14 +41,36 @@ MIN_INTERVAL = 15.0
 
 BAR_WIDTH = 24
 
-# Direction of drift against budget, not against 100%.
-PACE_MARK = {
-    "slow_down": "↑ over budget",
-    "spare_capacity": "↓ under budget",
-    "on_track": "· on budget",
-    "exhausted": "✗ spent",
-    "too_early": "◦ too early",
+# The arrow points the way you should move, and is coloured to match: red to
+# ease off, green for headroom. Same key the TUI prints under its panels.
+PACE_ANSI = {
+    "slow_down": "\033[31m",
+    "exhausted": "\033[31m",
+    "spare_capacity": "\033[32m",
+    "on_track": "",
+    "too_early": "",
 }
+LEGEND = (
+    ("slow_down", "slow down"),
+    ("spare_capacity", "speed up"),
+    ("on_track", "on budget"),
+    ("exhausted", "spent"),
+    ("too_early", "too new to judge"),
+)
+LEGEND_NOTE = (
+    "the % is how far to change that meter's average rate so far, "
+    "so it lasts until it resets"
+)
+
+
+def _legend(color: bool) -> str:
+    parts = []
+    for verdict, meaning in LEGEND:
+        tint = PACE_ANSI.get(verdict, "") if color else ""
+        off = RESET if color and tint else ""
+        parts.append(f"{tint}{PACE_ARROW[verdict]}{off} {meaning}")
+    key = "   ".join(parts)
+    return f"{key}\n{DIM if color else ''}{LEGEND_NOTE}{RESET if color else ''}"
 
 
 def build_payload(snapshots: list[ProviderSnapshot], at: str) -> dict:
@@ -63,6 +86,21 @@ def build_payload(snapshots: list[ProviderSnapshot], at: str) -> dict:
         "directives": directives(snapshots),
         "providers": [s.to_dict() for s in snapshots],
     }
+
+
+def _change_cell(pace) -> str:
+    """`-93%` / `+47%` / `-`, as one whitespace-free awk-friendly token.
+
+    Signed rather than worded so `awk '$10+0 < -50'` picks out the meters that
+    need real throttling without matching on the verdict string.
+    """
+    if pace is None or pace.change_percent is None:
+        return "-"
+    sign = "-" if pace.direction == "down" else "+"
+    # No "at the cap" marker here, unlike the TUI: this column is read by
+    # scripts, and a trailing symbol on a number invites a parsing bug for
+    # information the reader can get from the capped value itself.
+    return f"{sign}{pace.change_percent:.0f}%"
 
 
 def render_plain(snapshots: list[ProviderSnapshot]) -> str:
@@ -84,6 +122,7 @@ def render_plain(snapshots: list[ProviderSnapshot]) -> str:
                 flags.append("ACTIVE")
             if snap.stale:
                 flags.append("STALE")
+            pace = gauge.pace()
             rows.append(
                 (
                     "data",
@@ -100,20 +139,24 @@ def render_plain(snapshots: list[ProviderSnapshot]) -> str:
                         ",".join(flags) or "-",
                         # Appended, never inserted: existing scripts index
                         # columns 1-6 and must keep working.
-                        (pace.verdict if (pace := gauge.pace()) else "-"),
+                        (pace.verdict if pace else "-"),
                         # Absolute reset moment, whitespace-free so the column
                         # count stays fixed: 2026-08-08T03:32 local.
                         (gauge.resets_at.astimezone().strftime("%Y-%m-%dT%H:%M")
                          if gauge.resets_at else "-"),
                         format_remaining(gauge.seconds_remaining()).replace(" ", "")
                         or "-",
+                        # Signed, so the sign alone is the instruction: -93%
+                        # means ease off by 93%, +47% means there is room for
+                        # 47% more. Same number the TUI draws beside its arrow.
+                        _change_cell(pace),
                     ),
                 )
             )
     if not rows:
         return "no usage data\n"
 
-    columns = 9
+    columns = 10
     data = [cells for kind, cells in rows if kind == "data"]
     widths = (
         [max(len(cells[i]) for cells in data) for i in range(columns)]
@@ -156,37 +199,27 @@ def render_pretty(snapshots: list[ProviderSnapshot], color: bool) -> str:
             filled = min(BAR_WIDTH, round(gauge.percent / 100 * BAR_WIDTH))
             bar = "█" * filled + "░" * (BAR_WIDTH - filled)
             tint, off = (ANSI.get(gauge.severity, ""), RESET) if color else ("", "")
-            marker = "◆" if gauge.active_limit else " "
             pace = gauge.pace()
-            note = PACE_MARK.get(pace.verdict, "") if pace else ""
+            if pace:
+                arrow_tint = PACE_ANSI.get(pace.verdict, "") if color else ""
+                arrow_off = RESET if color and arrow_tint else ""
+                note = f"{arrow_tint}{pace.arrow} {pace.change_label}{arrow_off}"
+            else:
+                note = ""
             resets = format_reset_at(gauge.resets_at, "full")
             left = format_remaining(gauge.seconds_remaining())
             lines.append(
-                f"  {marker} {gauge.label:<24}{tint}{bar}{off} "
+                f"  {gauge.label:<24}{tint}{bar}{off} "
                 f"{tint}{gauge.percent:>3.0f}%{off}  "
                 f"resets {resets}  ({left:>6})  {note}"
             )
     if not lines:
         return "no usage data\n"
 
-    # Advice is per meter and always names its meter. A single combined
-    # instruction reads as guidance for everything you are running.
-    notable = [
-        d for d in directives(snapshots)
-        if d["verdict"] in ("slow_down", "exhausted")
-    ]
-    if notable:
-        lines.append("")
-        for row in notable:
-            lines.append(
-                f"  {BOLD if color else ''}{row['provider']} {row['label']}"
-                f"{RESET if color else ''}: {row['advice']}"
-            )
+    # One key under everything, exactly as the TUI draws it. No prose block
+    # restating the rows: the instruction now lives on the row it applies to.
     lines.append("")
-    lines.append(
-        f"{DIM if color else ''}pace is measured against each meter's own "
-        f"window, from its average rate so far{RESET if color else ''}"
-    )
+    lines.append(_legend(color))
     return "\n".join(lines) + "\n"
 
 

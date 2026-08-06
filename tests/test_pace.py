@@ -83,6 +83,70 @@ class TestRateAdjustment:
         assert pace.rate_adjustment == 0.0
 
 
+class TestArrowDirection:
+    """The arrow is read as an instruction, so it has to be one.
+
+    It used to point the way the *number* was drifting — up meant "you are
+    running hot" — which is exactly backwards from how anyone reads a glyph.
+    """
+
+    def test_burning_too_fast_points_down(self):
+        pace = gauge(91, 0.40).pace(NOW)
+        assert pace.arrow == "↓"
+        assert pace.direction == "down"
+
+    def test_headroom_points_up(self):
+        pace = gauge(20, 0.80).pace(NOW)
+        assert pace.arrow == "↑"
+        assert pace.direction == "up"
+
+    def test_on_budget_points_nowhere(self):
+        assert gauge(50, 0.50).pace(NOW).direction == "hold"
+
+    def test_exhausted_points_down_because_there_is_nothing_left(self):
+        assert gauge(100, 0.50).pace(NOW).direction == "down"
+
+
+class TestChangeMagnitude:
+    """"Slow down" without "by how much" is half an instruction."""
+
+    def test_slow_down_is_the_complement_of_the_multiplier(self):
+        """Throttling to 25% of the rate is slowing down by 75%."""
+        pace = gauge(80, 0.50).pace(NOW)
+        assert pace.change_percent == pytest.approx(
+            (1 - pace.rate_adjustment) * 100
+        )
+        assert pace.change_label == f"by {pace.change_percent:.0f}%"
+
+    def test_speed_up_is_the_excess_over_the_multiplier(self):
+        """Room for 1.6x the rate is speeding up by 60%."""
+        pace = gauge(20, 0.80).pace(NOW)
+        assert pace.change_percent == pytest.approx(
+            (pace.rate_adjustment - 1) * 100
+        )
+
+    def test_no_magnitude_where_none_is_meaningful(self):
+        for g in (gauge(50, 0.50), gauge(12, 0.02), gauge(100, 0.50)):
+            assert g.pace(NOW).change_percent is None
+
+    def test_on_budget_reads_as_words_not_a_useless_zero(self):
+        assert gauge(50, 0.50).pace(NOW).change_label == "on budget"
+
+    def test_a_capped_multiplier_is_marked_as_a_floor(self):
+        """"by 900%" on a barely-used meter would read as a precise figure."""
+        pace = gauge(0.01, 0.90).pace(NOW)
+        assert pace.at_cap
+        assert pace.change_label.endswith("%+")
+
+    def test_advice_carries_both_readings(self):
+        """The change is what you act on; the multiplier is what code applies."""
+        # Half the window gone with 80% spent: throttle to a quarter of the
+        # rate, which is the same instruction as "slow down by 75%".
+        advice = gauge(80, 0.50).pace(NOW).advice
+        assert "by 75%" in advice
+        assert "25% of its average rate" in advice
+
+
 class TestEarlyWindowGuard:
     """Minutes into a window, any usage divides into a meaningless ratio."""
 

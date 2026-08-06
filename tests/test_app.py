@@ -6,8 +6,8 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from agents_fuel_gauge import app as app_module
-from agents_fuel_gauge.app import FuelGaugeApp, GaugeBar, ProviderPanel, StatusLine
-from agents_fuel_gauge.models import Gauge, ProviderSnapshot
+from agents_fuel_gauge.app import FuelGaugeApp, GaugeBar, Legend, ProviderPanel
+from agents_fuel_gauge.models import PACE_ARROW, Gauge, ProviderSnapshot
 
 NOW = datetime.now(timezone.utc)
 FIVE_HOURS = 5 * 3_600
@@ -85,33 +85,54 @@ async def test_scoped_fable_bar_is_rendered(stub):
         drawn = widget.render().plain
         assert "7d Fable" in drawn
         assert "91%" in drawn
-        assert "◆" in drawn, "the first-to-run-out gauge gets a marker"
 
 
-async def test_status_line_gives_per_meter_advice(stub):
-    """No cross-provider ranking, and no unattributed instruction."""
+async def test_no_undocumented_symbols_on_a_row(stub):
+    """The ◆ that used to mark `active_limit` was unreadable on sight.
+
+    Every glyph a row can draw now appears in the legend below the panels;
+    anything else is a question mark rather than information.
+    """
     app = FuelGaugeApp(interval=3600)
     async with app.run_test() as pilot:
         await pilot.pause()
-        text = app.query(StatusLine).first().render().plain
-
-        # The claim that was removed: one meter crowned across providers.
-        assert "runs out first" not in text
-        assert "binding" not in text.lower()
-
-        # Any advice shown must name the meter it applies to.
-        if "meter" in text:
-            assert "Claude" in text or "Codex" in text
-            assert ":" in text
+        # `+` marks a rate multiplier pinned at its cap ("by 900%+").
+        allowed = set(PACE_ARROW.values()) | set("█░%:…+")
+        for bar in app.query(GaugeBar):
+            drawn = bar.render().plain
+            assert "◆" not in drawn
+            symbols = {c for c in drawn if not c.isalnum() and not c.isspace()}
+            assert symbols <= allowed, f"undocumented glyph in {drawn!r}"
 
 
-async def test_advice_never_claims_to_know_the_current_rate(stub):
-    """A snapshot yields an average since the window opened, not a live rate."""
-    app = FuelGaugeApp(interval=3600)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        text = app.query(StatusLine).first().render().plain
-        assert "of current rate" not in text
+class TestPaceArrow:
+    """The arrow is an instruction, not a status report."""
+
+    async def _row(self, stub, scope):
+        app = FuelGaugeApp(interval=3600)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            bar = next(b for b in app.query(GaugeBar) if b.gauge.scope == scope)
+            return bar.render().plain
+
+    async def test_a_meter_burning_too_fast_is_told_to_slow_down(self, stub):
+        app = FuelGaugeApp(interval=3600)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            codex = [
+                b for b in app.query(GaugeBar)
+                if b.gauge.percent == 98.0
+            ]
+            assert codex, "fixture should include an over-budget meter"
+            line = codex[0].render().plain
+            assert "↓" in line, f"over-budget meter must point down: {line!r}"
+            assert re.search(r"by \d+%", line), f"no magnitude in {line!r}"
+
+    async def test_a_meter_with_headroom_is_told_it_can_speed_up(self, stub):
+        """5% of a 5h window with four fifths of it gone: plenty of room."""
+        line = await self._row(stub, "all models")
+        assert "↑" in line, f"under-budget meter must point up: {line!r}"
+        assert re.search(r"by \d+%", line), f"no magnitude in {line!r}"
 
 
 async def test_each_panel_reports_its_own_age(stub):
@@ -197,8 +218,6 @@ async def test_failed_poll_keeps_last_known_bars(stub):
         assert "429" in str(app.query(".issue").first().render())
         # bars are still on screen alongside the warning
         assert len(app.query(GaugeBar)) == 4
-        # ...and the status line agrees rather than reporting "no usage data"
-        assert "Codex" in app.query(StatusLine).first().render().plain
 
 
 async def test_bar_survives_a_narrow_terminal(stub):
@@ -260,16 +279,22 @@ class TestNarrowTerminal:
                 assert "ago" in panel.border_subtitle or "now" in panel.border_subtitle
 
     @pytest.mark.parametrize("width", [120, 100, 70, 60, 50, 40, 32, 26])
-    async def test_status_line_advice_is_never_truncated(self, stub, width):
-        """It wraps rather than ellipsizing, so no advice is ever half-shown."""
+    async def test_legend_is_never_truncated(self, stub, width):
+        """It wraps rather than ellipsizing.
+
+        A legend cut off halfway documents some of the symbols and silently
+        drops the rest, which is worse than showing none of it.
+        """
         app = FuelGaugeApp(interval=3600)
         async with app.run_test(size=(width, 30)) as pilot:
             await pilot.pause()
-            text = app.query_one(StatusLine).render().plain
-            assert text.strip(), f"status line empty at width {width}"
-            assert "…" not in text, f"advice truncated at width {width}"
+            text = app.query_one(Legend).render().plain
+            assert text.strip(), f"legend empty at width {width}"
+            assert "…" not in text, f"legend truncated at width {width}"
+            for arrow in PACE_ARROW.values():
+                assert arrow in text, f"{arrow} undocumented at width {width}"
 
-    @pytest.mark.parametrize("width", [120, 80, 60, 50, 44])
+    @pytest.mark.parametrize("width", [120, 80, 60, 56, 52, 50])
     async def test_absolute_reset_time_is_shown_when_there_is_room(self, stub, width):
         """A duration alone means doing arithmetic against your calendar."""
         app = FuelGaugeApp(interval=3600)
@@ -281,12 +306,80 @@ class TestNarrowTerminal:
                     f"no clock time at width {width}: {line!r}"
                 )
 
-    async def test_status_line_grows_instead_of_truncating(self, stub):
+    @pytest.mark.parametrize("width", [120, 80, 60, 50, 44, 40, 36])
+    async def test_the_arrow_outlives_the_reset_clock(self, stub, width):
+        """What to do about a meter outranks exactly when it resets.
+
+        Carrying the magnitude costs about six columns, so the wall-clock reset
+        time now yields at 50 rather than 44. That is the intended trade: the
+        relative countdown still answers "have I got time for this", while
+        nothing else on the row says which way to move.
+        """
+        app = FuelGaugeApp(interval=3600)
+        async with app.run_test(size=(width, 30)) as pilot:
+            await pilot.pause()
+            for bar in app.query(GaugeBar):
+                line = bar.render().plain
+                assert re.search(r"[↑↓·✗◦]", line), (
+                    f"no pace arrow at width {width}: {line!r}"
+                )
+
+    @pytest.mark.parametrize("width", [120, 80, 60, 50, 44])
+    async def test_the_magnitude_outlives_the_reset_clock(self, stub, width):
+        """"Slow down" alone is half an instruction; keep the "by how much"."""
+        app = FuelGaugeApp(interval=3600)
+        async with app.run_test(size=(width, 30)) as pilot:
+            await pilot.pause()
+            for bar in app.query(GaugeBar):
+                line = bar.render().plain
+                if bar.gauge.pace().change_percent is None:
+                    continue  # nothing to size: on budget, spent, or too new
+                assert re.search(r"[↑↓] by \d+%", line), (
+                    f"no magnitude at width {width}: {line!r}"
+                )
+
+    @pytest.mark.parametrize("width", [120, 80, 60, 52, 46])
+    async def test_columns_line_up_across_both_boxes(self, stub, width):
+        """A jagged table reads as a broken one.
+
+        Rows used to choose their layout independently, which was invisible
+        while every tail was the same width. The moment the pace column carried
+        a magnitude it stopped being: a row reading "·" had eight columns spare
+        that a row reading "↓ by 92%" did not, so it picked a richer variant and
+        its bar started somewhere else entirely.
+        """
+        app = FuelGaugeApp(interval=3600)
+        async with app.run_test(size=(width, 30)) as pilot:
+            await pilot.pause()
+            lines = [b.render().plain for b in app.query(GaugeBar)]
+            starts = {line.index("%") for line in lines}
+            assert len(starts) == 1, (
+                f"percent column jagged at width {width}: {lines}"
+            )
+            arrows = {
+                re.search(r"[↑↓·✗◦]", line).start()
+                for line in lines
+                if re.search(r"[↑↓·✗◦]", line)
+            }
+            assert len(arrows) <= 1, (
+                f"arrow column jagged at width {width}: {lines}"
+            )
+
+    async def test_legend_grows_instead_of_truncating(self, stub):
         """Vertical space below the panels is free; horizontal space is not."""
         heights = {}
         for width in (120, 50):
             app = FuelGaugeApp(interval=3600)
             async with app.run_test(size=(width, 30)) as pilot:
                 await pilot.pause()
-                heights[width] = app.query_one(StatusLine).size.height
+                heights[width] = app.query_one(Legend).size.height
         assert heights[50] > heights[120]
+
+    async def test_legend_sits_below_both_panels(self, stub):
+        """One key for both boxes, not a caption on whichever it sits beside."""
+        app = FuelGaugeApp(interval=3600)
+        async with app.run_test(size=(100, 40)) as pilot:
+            await pilot.pause()
+            legend_top = app.query_one(Legend).region.y
+            for panel in app.query(ProviderPanel):
+                assert panel.region.y < legend_top

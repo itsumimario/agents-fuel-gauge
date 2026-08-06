@@ -2,14 +2,18 @@ Screen {
     background: $surface;
 }
 
-#status {
+#panels {
+    padding: 0 1;
+    height: 1fr;
+}
+
+/* Sits under both panels. `height: auto` lets it wrap to two or three lines on
+   a narrow terminal instead of being cropped — vertical space is cheap here,
+   horizontal space is not. */
+#legend {
     height: auto;
     padding: 0 2;
     margin: 1 1 0 1;
-}
-
-#panels {
-    padding: 0 1;
 }
 
 ProviderPanel {

@@ -2,9 +2,12 @@
 
 Two jobs: let someone see what the tool looks like before they've signed in to
 anything, and let the README screenshots be produced without publishing a real
-account's usage. Deliberately covers every state the UI can render — normal,
-warning, critical, a scoped per-model cap, and every pace verdict, since a
-screenshot that only ever shows "on track" would document half the tool.
+account's usage. Deliberately spans the states the UI can render — normal,
+warning and critical severities, a scoped per-model cap, and four of the five
+pace verdicts, since a screenshot that only ever shows "on track" would
+document half the tool. The fifth, `exhausted`, is left out: a meter pinned at
+100% would cost a row and teach less than the 82%-with-five-days-left case,
+which is the whole reason pace exists.
 """
 
 from __future__ import annotations

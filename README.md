@@ -70,12 +70,13 @@ uv tool install git+https://github.com/itsumimario/agents-fuel-gauge.git
   different places and neither shows the other. This shows all of it, live.
 - **It shows the limits other tools hide** — including per-model weekly caps,
   which can sit at 91% while the headline number still reads a comfortable 50%.
-- **It tells you whether you're burning too fast**, not just how full the bar
-  is. 91% used is fine with an hour left and a crisis with four days left.
+- **It tells you how much to slow down or speed up**, per meter, not just how
+  full the bar is. 91% used is fine with an hour left and a crisis with four
+  days left.
 - **One-shot from the command line.** `afg --check` prints once and exits, for
   scripts, prompts, cron, and CI.
 - **A tiny JSON service for anything else.** `afg --json` gives other tools a
-  clean, normalised feed — and a single rate instruction they can act on.
+  clean, normalised feed — and a rate instruction per meter they can act on.
 
 ## Usage
 
@@ -89,19 +90,28 @@ afg --demo               # synthetic data, no accounts needed
 afg --update             # update to the latest version
 ```
 
-**`◆` marks the one that runs out first** — the limit that will actually stop
-you working. It isn't always the fullest-looking bar.
+### The arrow tells you what to do
 
-**Pace marks say whether you're ahead of budget**, which the percentage alone
-never tells you:
+Every row ends in an instruction, not a status report. The arrow points the way
+you should move, and says how far:
 
 | | |
 | --- | --- |
-| `↓` | under budget — you have room |
+| `↓ by 92%` | **slow down.** At this rate the meter runs out before it resets — cut to 8% of it |
+| `↑ by 150%` | **speed up.** There is room for two and a half times this rate |
 | `·` | on budget — this rate lasts exactly to the reset |
-| `↑` | over budget — you'll run out early at this rate |
-| `◦` | window too new to judge |
 | `✗` | spent |
+| `◦` | window too new to judge |
+
+The percentage is the *change*, so `↓ by 92%` and "throttle to 8%" are the same
+instruction — the first is just readable at a glance. It's measured against
+each meter's **average rate so far**, since one reading is all a snapshot gives
+you. A `+` (`↑ by 900%+`) means the figure hit its cap and is a floor, not a
+measurement.
+
+That number is what makes the whole thing actionable: a bar at 91% tells you
+to panic or relax depending on facts that aren't on the screen. `↓ by 92%`
+tells you what to actually change.
 
 Each panel shows its own last-updated age, because the two providers are
 fetched independently and one can go stale while the other keeps refreshing.
@@ -121,21 +131,33 @@ blanks a panel — the last known numbers stay up behind a warning.
 
 ```console
 $ afg --check
-claude  5h  all-models           34%  2h10m   -      spare_capacity
-claude  7d  all-models           68%  18h07m  -      spare_capacity
-claude  7d  Fable                91%  18h07m  FIRST  on_track
-codex   7d  all-models           82%  5d01h   FIRST  slow_down
-codex   7d  GPT-5.3-Codex-Spark  12%  6d21h   -      too_early
+claude  5h  all-models           34%  2h10m   -       spare_capacity  2026-08-06T10:16  2h     +150%
+claude  7d  all-models           68%  18h07m  -       spare_capacity  2026-08-07T02:13  18h    +289%
+claude  7d  Fable                91%  18h07m  ACTIVE  on_track        2026-08-07T02:13  18h    -
+codex   7d  all-models           82%  5d01h   -       slow_down       2026-08-11T10:05  5d1h   -92%
+codex   7d  GPT-5.3-Codex-Spark  12%  6d21h   -       too_early       2026-08-13T06:05  6d21h  -
 ```
 
-Columns are `provider · window · scope · used · resets-in · flags · pace`.
+| | Column | |
+| --- | --- | --- |
+| `$1` | provider | |
+| `$2` | window | `5h`, `7d` |
+| `$3` | scope | `all-models` or a model name |
+| `$4` | used | percent |
+| `$5` | resets in | countdown |
+| `$6` | flags | `ACTIVE` — the provider says this limit is the one in force. `STALE` — carried over from an earlier poll |
+| `$7` | pace verdict | |
+| `$8` | resets at | local time, ISO-ish |
+| `$9` | remaining | days and hours |
+| `$10` | change | signed: `-92%` means slow down by 92% |
+
 Every field is a single whitespace-free token, so awk columns mean what you'd
 expect:
 
 ```sh
-afg --check | awk '$4+0 > 80'          # anything over 80% used
-afg --check | awk '$6 ~ /FIRST/'       # only what stops you first
-afg --check | awk '$7 == "slow_down"'  # only what you're overspending
+afg --check | awk '$4+0 > 80'           # anything over 80% used
+afg --check | awk '$6 ~ /ACTIVE/'       # only the limit currently in force
+afg --check | awk '$10+0 < -50'         # only what needs real throttling
 ```
 
 Note the difference between columns 4 and 7 in that output: Fable at **91%** is
@@ -143,65 +165,81 @@ Note the difference between columns 4 and 7 in that output: Fable at **91%** is
 `slow_down` because five days remain. The percentage alone would have ranked
 them the other way round.
 
+Columns are only ever appended, never inserted, so scripts written against an
+older version keep working.
+
 Exits non-zero if a provider couldn't be read.
 
 Add `--pretty` for the same data with bars, when a human is reading.
 
 ### JSON
 
-`afg --json` emits an envelope: a single **directive** to act on, plus the full
+`afg --json` emits an envelope: **one directive per meter**, plus the full
 per-provider detail if you want to look closer. Both providers are normalised
 into the same shape, so consumers never need to know which API a number came
 from.
 
 ```json
 {
-  "at": "2026-08-06T03:41:12.008431+00:00",
-  "directive": {
-    "verdict": "slow_down",
-    "rateAdjustment": 0.051,
-    "advice": "slow to 5% of current rate",
-    "constraint": {
+  "at": "2026-08-06T12:11:46.572952+00:00",
+  "directives": [
+    {
       "provider": "codex",
       "label": "7d all models",
-      "percent": 98.0,
-      "severity": "critical",
-      "secondsRemaining": 172163
-    },
-    "projectedUsagePercent": 137.0,
-    "exhaustsInSeconds": 8829
-  },
+      "scope": "all models",
+      "window": "7d",
+      "percent": 82.0,
+      "severity": "warning",
+      "verdict": "slow_down",
+      "actionable": true,
+      "direction": "down",
+      "rateAdjustment": 0.078,
+      "changePercent": -92.2,
+      "advice": "slow this meter down by 92% — to 8% of its average rate",
+      "projectedUsagePercent": 287.0,
+      "resetsAt": "2026-08-11T10:05:46+00:00",
+      "secondsRemaining": 435239
+    }
+  ],
   "providers": [ … ]
 }
 ```
 
-#### The directive
-
-The one thing most consumers need. `rateAdjustment` is a plain multiplier —
-apply it to your current request rate and you land exactly on empty at reset.
+#### The directives
 
 | Field | Meaning |
 | ----- | ------- |
-| `verdict` | `slow_down` / `on_track` / `spare_capacity` / `exhausted` / `unknown` |
-| `rateAdjustment` | multiply your current rate by this. `0.05` = throttle to 5%; `1.9` = room for nearly double |
-| `constraint` | which limit this came from — always the one under the most pace pressure |
+| `provider`, `label` | which meter this applies to — **only** that meter |
+| `verdict` | `slow_down` / `on_track` / `spare_capacity` / `exhausted` / `too_early` |
+| `direction` | `down` / `up` / `hold` — the arrow, as a value |
+| `changePercent` | signed change to make, or `null` when no change is called for. `-92.2` = ease off by 92% |
+| `rateAdjustment` | the same instruction as a multiplier, for code that scales a rate directly. `0.078` = throttle to 7.8% |
+| `actionable` | `false` when the window is too new to judge |
 | `projectedUsagePercent` | where you land at reset if nothing changes. Over 100 means you run out early |
-| `exhaustsInSeconds` | how long until empty at the current rate, or `null` if you'd survive |
 
-A window that has only just opened is never chosen as the constraint: minutes
-of data divide into a wild ratio, and throttling on that would be worse than
-doing nothing. If nothing is judgeable yet, `verdict` is `unknown` and
-`rateAdjustment` is `null` — hold your current rate.
+**There is deliberately no single combined instruction.** An earlier version
+ranked every meter together and emitted one winner with one multiplier. That
+was wrong twice over: ranking implies a prediction the data can't support —
+`used / elapsed` is an *average since the window opened*, so a meter burned
+hard days ago and idle since looks identical to one burning steadily now — and
+a lone multiplier reads as advice about your whole workload when it only ever
+described one window.
+
+A window that has only just opened reports `too_early`, `actionable: false` and
+`rateAdjustment: 1.0` — a safe no-op. Minutes of data divide into a wild ratio,
+and throttling on that would be worse than doing nothing.
 
 #### Per-gauge detail
 
 Each gauge under `providers[].gauges[]` carries `window`, `scope`, `label`,
-`percent`, `severity`, `runsOutFirst`, `resetsAt`, `secondsRemaining`,
-`windowSeconds`, and its own `pace` object with the same shape as the directive.
+`percent`, `severity`, `activeLimit`, `resetsAt`, `secondsRemaining`,
+`windowSeconds`, and its own `pace` object.
 
 ```sh
-afg --json | jq -r '.directive.rateAdjustment'
-afg --json | jq -r '.providers[].gauges[] | select(.runsOutFirst) | "\(.label) \(.percent)%"'
+afg --json | jq -r '.directives[] | select(.direction == "down")
+                    | "\(.provider) \(.label): \(.changePercent)%"'
+afg --json | jq -r '.providers[].gauges[] | select(.activeLimit)
+                    | "\(.label) \(.percent)%"'
 ```
 
 ### Subscribing
@@ -211,12 +249,27 @@ flushed immediately — so anything that can read a pipe can subscribe:
 
 ```sh
 afg --watch --json -i 60 | while read -r line; do
-  factor=$(jq -r '.directive.rateAdjustment' <<<"$line")
-  echo "adjusting request rate by ${factor}x"
+  jq -r '.directives[] | select(.verdict == "slow_down")
+         | "throttle \(.provider)/\(.label) to \(.rateAdjustment)x"' <<<"$line"
 done
 ```
 
 That's the whole mechanism: no daemon, no socket, no broker.
+
+### Rate limiting
+
+The vendor usage endpoints are themselves rate-limited, and polling them hard
+earns a 429 long before your real quota runs out. So readings are cached on
+disk and shared between every `afg` process: a status bar polling once a second
+still costs one request a minute. A 429 is recorded with its `Retry-After`, and
+nothing is attempted until it expires — retrying into a closed door is what
+turns one 429 into a stream of them.
+
+```sh
+afg --max-age 300     # reuse a reading up to 5 minutes old
+afg --no-cache        # always call the API (can earn you a 429)
+afg --clear-cache     # drop cached readings and any standing backoff
+```
 
 ## Updating
 
@@ -234,7 +287,7 @@ uncommitted changes.
 | **OS** | Linux |
 | **Python** | 3.11+ — the installer provisions it for you |
 | **Accounts** | Claude Code and/or Codex, already signed in |
-| **Terminal** | 256 colours, a monospace font covering `█ ░ ╭ ◆` |
+| **Terminal** | 256 colours, a monospace font covering `█ ░ ╭ ↑ ↓` |
 
 Quota data exists only for **subscription** logins (Claude Pro/Max, ChatGPT
 Plus/Pro). API-key auth has no quota to report; that's detected and explained
@@ -261,15 +314,17 @@ already on your machine:
 | Claude | `api.anthropic.com/api/oauth/usage` |
 | Codex | `chatgpt.com/backend-api/wham/usage` |
 
-Nothing is written, cached, or sent anywhere else. No telemetry, no server, no
-third party. Account emails are masked and paths render as `~/…`, so
+Nothing is sent anywhere else. No telemetry, no server, no third party. The
+only thing written to disk is the response cache described above, under your
+XDG cache directory. Account emails are masked and paths render as `~/…`, so
 screenshots stay shareable.
 
 ## Notes
 
 - **Codex doesn't grade its own limits**, so severity is derived from
-  thresholds (≥60% warning, ≥85% critical), and `◆` goes to the fullest bar.
-  Claude reports both directly.
+  thresholds (≥60% warning, ≥85% critical). Claude reports its own. Neither
+  gets an "in force" flag invented for it: Anthropic reports one, OpenAI
+  doesn't, so no Codex bar claims to be the binding one.
 - **Codex identifies windows by duration, not name.** On plans with no 5-hour
   throttle, no 5h bar is drawn because the API doesn't return one.
 - **Not every model gets its own bar** — only those with a dedicated sub-cap.
