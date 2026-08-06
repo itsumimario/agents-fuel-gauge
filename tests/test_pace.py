@@ -12,7 +12,7 @@ from agents_fuel_gauge.models import (
     MAX_RATE_ADJUSTMENT,
     Gauge,
     ProviderSnapshot,
-    overall_directive,
+    directives,
 )
 
 NOW = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
@@ -114,36 +114,48 @@ class TestMissingInformation:
         assert gauge(0, 0.0).pace(NOW) is None
 
 
-class TestDirectiveSelection:
+class TestPerMeterDirectives:
+    """One entry per meter, never one combined instruction.
+
+    Ranking meters against each other implied a prediction the data cannot
+    make: `used / elapsed` is an average over the whole window, so a meter
+    burned hard days ago and idle since is indistinguishable from one burning
+    now — and would be crowned "runs out first" on usage that had stopped.
+    """
+
     def _snapshot(self, *gauges) -> ProviderSnapshot:
         return ProviderSnapshot(key="claude", display_name="Claude", gauges=list(gauges))
 
-    def test_picks_worst_pace_over_highest_percentage(self):
-        comfortable = gauge(95, 0.95, scope="nearly done")
-        strained = gauge(60, 0.30, scope="burning fast")
-        directive = overall_directive([self._snapshot(comfortable, strained)], NOW)
-        assert directive["constraint"]["label"] == "7d burning fast"
-        assert directive["constraint"]["percent"] == 60.0
+    def test_one_entry_per_meter(self):
+        rows = directives([self._snapshot(gauge(95, 0.95), gauge(60, 0.30))], NOW)
+        assert len(rows) == 2
 
-    def test_too_early_windows_cannot_become_the_constraint(self):
-        fresh = gauge(12, 0.01, scope="just opened")
-        steady = gauge(55, 0.50, scope="steady")
-        directive = overall_directive([self._snapshot(fresh, steady)], NOW)
-        assert directive["constraint"]["label"] == "7d steady"
+    def test_every_entry_names_its_own_meter(self):
+        rows = directives([self._snapshot(gauge(60, 0.30, scope="burning fast"))], NOW)
+        assert rows[0]["provider"] == "claude"
+        assert rows[0]["label"] == "7d burning fast"
 
-    def test_all_unknown_yields_a_safe_hold(self):
+    def test_advice_is_scoped_to_that_meter_alone(self):
+        """Wording must not read as guidance for everything you run."""
+        rows = directives([self._snapshot(gauge(60, 0.30))], NOW)
+        assert "this meter" in rows[0]["advice"]
+
+    def test_advice_says_average_not_current(self):
+        """One snapshot yields an average rate; claiming "current" overstates it."""
+        rows = directives([self._snapshot(gauge(60, 0.30))], NOW)
+        assert "average" in rows[0]["advice"]
+        assert "current rate" not in rows[0]["advice"]
+
+    def test_each_entry_carries_its_own_reset_time(self):
+        rows = directives([self._snapshot(gauge(60, 0.30))], NOW)
+        assert rows[0]["resetsAt"] is not None
+        assert rows[0]["secondsRemaining"] > 0
+
+    def test_too_early_meters_are_marked_unactionable_not_dropped(self):
+        rows = directives([self._snapshot(gauge(12, 0.01))], NOW)
+        assert rows[0]["verdict"] == "too_early"
+        assert rows[0]["actionable"] is False
+
+    def test_meters_without_enough_data_produce_no_entry(self):
         blind = Gauge("7d", "all models", 50.0, None)
-        directive = overall_directive([self._snapshot(blind)], NOW)
-        assert directive["verdict"] == "unknown"
-        assert directive["rateAdjustment"] is None
-        assert "hold" in directive["advice"]
-
-    def test_five_hour_and_weekly_windows_compare_fairly(self):
-        """Different window lengths must be comparable after normalising."""
-        session = Gauge(
-            "5h", "session", 80.0, NOW + timedelta(seconds=int(FIVE_HOURS * 0.5)),
-            window_seconds=FIVE_HOURS,
-        )
-        weekly = gauge(55, 0.50, scope="weekly")
-        directive = overall_directive([self._snapshot(session, weekly)], NOW)
-        assert directive["constraint"]["label"] == "5h session"
+        assert directives([self._snapshot(blind)], NOW) == []

@@ -17,12 +17,14 @@ import sys
 import time
 from datetime import datetime, timezone
 
-from . import BANNER
+from . import BANNER, cache
 from .models import (
     ProviderSnapshot,
+    directives,
     format_age,
     format_countdown,
-    overall_directive,
+    format_remaining,
+    format_reset_at,
 )
 from .sources import fetch_all
 
@@ -51,13 +53,14 @@ PACE_MARK = {
 def build_payload(snapshots: list[ProviderSnapshot], at: str) -> dict:
     """The JSON envelope.
 
-    `directive` sits at the top level because a subscriber usually wants one
-    instruction, not a table it has to reduce itself. `providers` keeps the
-    full detail for anything that does want to look closer.
+    `directives` is a list with one entry per meter, each naming the provider
+    and window it applies to. There is deliberately no single combined
+    instruction: one multiplier for everything reads as advice about your whole
+    workload when it only ever described one window.
     """
     return {
         "at": at,
-        "directive": overall_directive(snapshots),
+        "directives": directives(snapshots),
         "providers": [s.to_dict() for s in snapshots],
     }
 
@@ -77,8 +80,8 @@ def render_plain(snapshots: list[ProviderSnapshot]) -> str:
             rows.append(("error", (snap.key, snap.error)))
         for gauge in snap.gauges:
             flags = []
-            if gauge.runs_out_first:
-                flags.append("FIRST")
+            if gauge.active_limit:
+                flags.append("ACTIVE")
             if snap.stale:
                 flags.append("STALE")
             rows.append(
@@ -98,13 +101,19 @@ def render_plain(snapshots: list[ProviderSnapshot]) -> str:
                         # Appended, never inserted: existing scripts index
                         # columns 1-6 and must keep working.
                         (pace.verdict if (pace := gauge.pace()) else "-"),
+                        # Absolute reset moment, whitespace-free so the column
+                        # count stays fixed: 2026-08-08T03:32 local.
+                        (gauge.resets_at.astimezone().strftime("%Y-%m-%dT%H:%M")
+                         if gauge.resets_at else "-"),
+                        format_remaining(gauge.seconds_remaining()).replace(" ", "")
+                        or "-",
                     ),
                 )
             )
     if not rows:
         return "no usage data\n"
 
-    columns = 7
+    columns = 9
     data = [cells for kind, cells in rows if kind == "data"]
     widths = (
         [max(len(cells[i]) for cells in data) for i in range(columns)]
@@ -147,30 +156,36 @@ def render_pretty(snapshots: list[ProviderSnapshot], color: bool) -> str:
             filled = min(BAR_WIDTH, round(gauge.percent / 100 * BAR_WIDTH))
             bar = "█" * filled + "░" * (BAR_WIDTH - filled)
             tint, off = (ANSI.get(gauge.severity, ""), RESET) if color else ("", "")
-            marker = "◆" if gauge.runs_out_first else " "
-            countdown = format_countdown(gauge.seconds_remaining())
+            marker = "◆" if gauge.active_limit else " "
             pace = gauge.pace()
-            note = f"  {PACE_MARK.get(pace.verdict, '')}" if pace else ""
+            note = PACE_MARK.get(pace.verdict, "") if pace else ""
+            resets = format_reset_at(gauge.resets_at, "full")
+            left = format_remaining(gauge.seconds_remaining())
             lines.append(
                 f"  {marker} {gauge.label:<24}{tint}{bar}{off} "
-                f"{tint}{gauge.percent:>3.0f}%{off}  {countdown:<8}{note}"
+                f"{tint}{gauge.percent:>3.0f}%{off}  "
+                f"resets {resets}  ({left:>6})  {note}"
             )
     if not lines:
         return "no usage data\n"
 
-    directive = overall_directive(snapshots)
+    # Advice is per meter and always names its meter. A single combined
+    # instruction reads as guidance for everything you are running.
+    notable = [
+        d for d in directives(snapshots)
+        if d["verdict"] in ("slow_down", "exhausted")
+    ]
+    if notable:
+        lines.append("")
+        for row in notable:
+            lines.append(
+                f"  {BOLD if color else ''}{row['provider']} {row['label']}"
+                f"{RESET if color else ''}: {row['advice']}"
+            )
     lines.append("")
-    if directive.get("advice"):
-        constraint = directive["constraint"]
-        lines.append(
-            f"{BOLD if color else ''}pace{RESET if color else ''}  "
-            f"{constraint['provider']} {constraint['label']} is the constraint — "
-            f"{directive['advice']}"
-        )
     lines.append(
-        f"{DIM if color else ''}◆ runs out before the others   "
-        f"↑ over budget   ↓ under budget   ◦ window too new to judge"
-        f"{RESET if color else ''}"
+        f"{DIM if color else ''}pace is measured against each meter's own "
+        f"window, from its average rate so far{RESET if color else ''}"
     )
     return "\n".join(lines) + "\n"
 
@@ -219,6 +234,23 @@ def build_parser() -> argparse.ArgumentParser:
              "emits one JSON object per line for another service to subscribe to",
     )
     parser.add_argument(
+        "--max-age", type=float, default=cache.DEFAULT_MAX_AGE, metavar="SECONDS",
+        help=(
+            f"reuse a cached reading this fresh instead of calling the API "
+            f"(default: {cache.DEFAULT_MAX_AGE:.0f}). The cache is shared "
+            f"between all afg processes, so a status bar polling every second "
+            f"still costs one request a minute."
+        ),
+    )
+    parser.add_argument(
+        "--no-cache", action="store_true",
+        help="always call the API (ignores --max-age; can earn you a 429)",
+    )
+    parser.add_argument(
+        "--clear-cache", action="store_true",
+        help="delete cached readings and any standing rate-limit backoff",
+    )
+    parser.add_argument(
         "--update", action="store_true",
         help="fetch the latest version and reinstall",
     )
@@ -249,15 +281,26 @@ def _emit_once(snapshots: list[ProviderSnapshot], args) -> None:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
+    if args.clear_cache:
+        cache.clear()
+        print(f"cleared {cache.cache_dir()}")
+        return 0
+
     if args.update:
         from .update import update
 
         return update()
 
+    max_age = 0.0 if args.no_cache else args.max_age
     if args.demo:
-        from .demo import fetch_demo as fetcher
+        from .demo import fetch_demo as _demo
+
+        async def fetcher():
+            return await _demo()
     else:
-        fetcher = fetch_all
+
+        async def fetcher():
+            return await fetch_all(max_age)
 
     if args.watch:
         interval = max(MIN_INTERVAL, args.interval)

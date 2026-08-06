@@ -20,11 +20,12 @@ import asyncio
 import json
 import os
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
 
+from . import cache
 from .models import Gauge, ProviderSnapshot, derive_severity, mask_email
 
 CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
@@ -53,6 +54,65 @@ _CLAUDE_WINDOW_SECONDS = {
 
 class SourceError(RuntimeError):
     """A fetch failed in a way worth showing the user verbatim."""
+
+
+class RateLimited(SourceError):
+    """A 429, or a standing backoff from a previous one."""
+
+    def __init__(self, message: str, retry_after: float | None = None) -> None:
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
+async def _cached_get(
+    client: httpx.AsyncClient,
+    provider: str,
+    url: str,
+    headers: dict,
+    max_age: float,
+) -> tuple[dict, float]:
+    """Fetch through the cache, honouring any standing backoff.
+
+    Returns (payload, age_seconds). Age is 0 for a live response, and non-zero
+    when the payload came from disk — the caller uses that to mark the reading
+    as stale rather than passing off an old number as current.
+    """
+    fresh, _ = cache.load(provider, max_age)
+    if fresh is not None:
+        return fresh, 0.0 if max_age <= 0 else cache.load_stale(provider)[1]
+
+    # Never knock on a door the server has explicitly closed. Retrying inside
+    # the backoff is what turns a single 429 into a continuous stream of them.
+    waiting = cache.blocked_for(provider)
+    if waiting > 0:
+        stale, age = cache.load_stale(provider)
+        if stale is not None:
+            return stale, age
+        raise RateLimited(
+            f"rate limited — retrying in {int(waiting)}s", retry_after=waiting
+        )
+
+    try:
+        response = await client.get(url, headers=headers)
+    except httpx.HTTPError:
+        stale, age = cache.load_stale(provider)
+        if stale is not None:
+            return stale, age
+        raise
+
+    if response.status_code == 429:
+        retry = response.headers.get("retry-after")
+        seconds = float(retry) if (retry or "").replace(".", "", 1).isdigit() else None
+        cache.block(provider, seconds)
+        stale, age = cache.load_stale(provider)
+        if stale is not None:
+            return stale, age
+        suffix = f" — retrying in {int(seconds)}s" if seconds else ""
+        raise RateLimited(f"rate limited (429){suffix}", retry_after=seconds)
+
+    payload = _raise_for_status(response, provider)
+    cache.store(provider, payload)
+    return payload, 0.0
 
 
 def tidy_path(path: Path) -> str:
@@ -180,7 +240,7 @@ def _claude_gauges(payload: dict) -> list[Gauge]:
                 severity=entry.get("severity") or derive_severity(
                     float(entry.get("percent") or 0.0)
                 ),
-                runs_out_first=bool(entry.get("is_active")),
+                active_limit=bool(entry.get("is_active")),
                 window_seconds=_CLAUDE_WINDOW_SECONDS.get(kind),
             )
         )
@@ -211,7 +271,9 @@ def _claude_gauges(payload: dict) -> list[Gauge]:
     return gauges
 
 
-async def fetch_claude(client: httpx.AsyncClient) -> ProviderSnapshot:
+async def fetch_claude(
+    client: httpx.AsyncClient, max_age: float = cache.DEFAULT_MAX_AGE
+) -> ProviderSnapshot:
     snapshot = ProviderSnapshot(
         key="claude", display_name="Claude", captured_at=datetime.now(timezone.utc)
     )
@@ -230,16 +292,21 @@ async def fetch_claude(client: httpx.AsyncClient) -> ProviderSnapshot:
             "anthropic-beta": CLAUDE_BETA,
             "Content-Type": "application/json",
         }
-        usage = _raise_for_status(
-            await client.get(CLAUDE_USAGE_URL, headers=headers), "claude"
+        usage, age = await _cached_get(
+            client, "claude", CLAUDE_USAGE_URL, headers, max_age
         )
         snapshot.gauges = _claude_gauges(usage)
+        if age:
+            snapshot.stale = True
+            snapshot.captured_at = datetime.now(timezone.utc) - timedelta(seconds=age)
         snapshot.plan = _plan_from_tier(creds.get("rateLimitTier"))
 
         # The account label is a nicety; never let it fail the whole panel.
         try:
-            profile = _raise_for_status(
-                await client.get(CLAUDE_PROFILE_URL, headers=headers), "claude"
+            # The profile is effectively static; cache it hard so it never
+            # costs a request that the usage endpoint needs.
+            profile, _ = await _cached_get(
+                client, "claude-profile", CLAUDE_PROFILE_URL, headers, 86_400
             )
             account = profile.get("account") or {}
             snapshot.account = mask_email(account.get("email"))
@@ -292,15 +359,16 @@ def _codex_gauges(payload: dict) -> list[Gauge]:
             _codex_windows(extra.get("rate_limit"), extra.get("limit_name") or "scoped")
         )
 
-    # Anthropic flags which limit will stop you (`is_active`); OpenAI does not,
-    # so infer it — whichever bar is fullest is what you hit first.
-    if gauges:
-        hottest = max(gauges, key=lambda g: g.percent)
-        gauges = [replace(g, runs_out_first=g is hottest) for g in gauges]
+    # Anthropic reports which limit is currently active; OpenAI does not, and
+    # guessing from "whichever bar is fullest" was wrong: a meter filled days
+    # ago and idle since looks identical to one filling right now. Better to
+    # flag nothing than to flag the wrong thing.
     return gauges
 
 
-async def fetch_codex(client: httpx.AsyncClient) -> ProviderSnapshot:
+async def fetch_codex(
+    client: httpx.AsyncClient, max_age: float = cache.DEFAULT_MAX_AGE
+) -> ProviderSnapshot:
     snapshot = ProviderSnapshot(
         key="codex", display_name="Codex", captured_at=datetime.now(timezone.utc)
     )
@@ -326,10 +394,13 @@ async def fetch_codex(client: httpx.AsyncClient) -> ProviderSnapshot:
         if tokens.get("account_id"):
             headers["chatgpt-account-id"] = tokens["account_id"]
 
-        usage = _raise_for_status(
-            await client.get(CODEX_USAGE_URL, headers=headers), "codex"
+        usage, age = await _cached_get(
+            client, "codex", CODEX_USAGE_URL, headers, max_age
         )
         snapshot.gauges = _codex_gauges(usage)
+        if age:
+            snapshot.stale = True
+            snapshot.captured_at = datetime.now(timezone.utc) - timedelta(seconds=age)
         plan = usage.get("plan_type")
         snapshot.plan = plan.capitalize() if isinstance(plan, str) else None
         snapshot.account = mask_email(usage.get("email"))
@@ -340,9 +411,18 @@ async def fetch_codex(client: httpx.AsyncClient) -> ProviderSnapshot:
     return snapshot
 
 
-async def fetch_all() -> list[ProviderSnapshot]:
-    """Both providers in parallel — neither failure mode blocks the other."""
+async def fetch_all(
+    max_age: float = cache.DEFAULT_MAX_AGE,
+) -> list[ProviderSnapshot]:
+    """Both providers in parallel — neither failure mode blocks the other.
+
+    `max_age` is served from the shared on-disk cache, so several `afg`
+    processes running at once cost one request between them rather than one
+    each. Pass 0 to force a live fetch.
+    """
     async with httpx.AsyncClient(timeout=TIMEOUT) as client:
         return list(
-            await asyncio.gather(fetch_claude(client), fetch_codex(client))
+            await asyncio.gather(
+                fetch_claude(client, max_age), fetch_codex(client, max_age)
+            )
         )

@@ -104,11 +104,11 @@ class TestClaude:
         fable = next(g for g in _claude_gauges(CLAUDE_PAYLOAD) if g.scope == "Fable")
         assert fable.percent == 91
         assert fable.severity == "critical"
-        assert fable.runs_out_first is True
+        assert fable.active_limit is True
 
-    def test_only_one_gauge_runs_out_first(self):
+    def test_only_one_gauge_active_limit(self):
         gauges = _claude_gauges(CLAUDE_PAYLOAD)
-        assert sum(g.runs_out_first for g in gauges) == 1
+        assert sum(g.active_limit for g in gauges) == 1
 
     def test_resets_at_is_timezone_aware(self):
         gauge = _claude_gauges(CLAUDE_PAYLOAD)[0]
@@ -144,10 +144,10 @@ class TestCodex:
         assert gauges[0].severity == "critical"  # 98%
         assert gauges[1].severity == "normal"  # 0%
 
-    def test_hottest_bar_runs_out_first(self):
+    def test_codex_flags_nothing_since_openai_reports_nothing(self):
+        """Guessing "the fullest bar" reads days-old usage as current."""
         gauges = _codex_gauges(CODEX_PAYLOAD)
-        assert gauges[0].runs_out_first is True
-        assert gauges[1].runs_out_first is False
+        assert all(g.active_limit is False for g in gauges)
 
     def test_empty_payload_yields_nothing(self):
         assert _codex_gauges({}) == []

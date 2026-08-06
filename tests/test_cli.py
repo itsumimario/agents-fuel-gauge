@@ -20,25 +20,27 @@ class TestPlain:
         rows = [r for r in out.splitlines() if r.strip()]
         assert len(rows) == 5
         for row in rows:
-            assert len(row.split()) == 7, row
+            assert len(row.split()) == 9, row
 
-    def test_pace_column_is_appended_not_inserted(self):
-        """Columns 1-6 are a published interface; pace must not shift them."""
+    def test_new_columns_are_appended_not_inserted(self):
+        """Columns 1-6 are a published interface; additions must not shift them."""
         rows = [r.split() for r in render_plain(demo_snapshots()).splitlines() if r.strip()]
         for cells in rows:
             assert cells[0] in {"claude", "codex"}      # $1 provider
             assert cells[1].endswith(("h", "d"))         # $2 window
             assert cells[3].endswith("%")                # $4 used
-            assert cells[5] in {"-", "FIRST", "STALE", "FIRST,STALE"}  # $6 flags
+            assert cells[5] in {"-", "ACTIVE", "STALE", "ACTIVE,STALE"}  # $6 flags
             assert cells[6] in {                          # $7 pace, new
                 "-", "slow_down", "on_track", "spare_capacity",
                 "exhausted", "too_early",
             }
 
-    def test_marks_what_runs_out_first_without_symbols(self):
+    def test_marks_what_active_limit_without_symbols(self):
         out = render_plain(demo_snapshots())
-        first = [r for r in out.splitlines() if "FIRST" in r]
-        assert len(first) == 2  # one per provider
+        flagged = [r for r in out.splitlines() if "ACTIVE" in r]
+        # Only Claude reports an active limit; Codex reports none, so we
+        # invent none.
+        assert len(flagged) == 1
         assert "◆" not in out, "plain output must stay ASCII-safe"
 
     def test_no_ansi_escapes(self):
@@ -62,7 +64,7 @@ class TestPretty:
     def test_draws_bars_and_a_legend(self):
         out = render_pretty(demo_snapshots(), color=False)
         assert "█" in out and "░" in out
-        assert "◆ runs out before the others" in out
+        assert "average rate so far" in out
 
     def test_no_color_means_no_escapes(self):
         assert "\033" not in render_pretty(demo_snapshots(), color=False)
@@ -81,7 +83,7 @@ class TestJson:
     def test_envelope_shape(self, capsys):
         assert main(["--demo", "--json"]) == 0
         payload = json.loads(capsys.readouterr().out)
-        assert set(payload) == {"at", "directive", "providers"}
+        assert set(payload) == {"at", "directives", "providers"}
         assert [p["provider"] for p in payload["providers"]] == ["claude", "codex"]
 
     def test_gauge_fields(self, capsys):
@@ -90,7 +92,7 @@ class TestJson:
         gauge = payload["providers"][0]["gauges"][0]
         assert set(gauge) == {
             "window", "scope", "label", "percent", "severity",
-            "runsOutFirst", "resetsAt", "secondsRemaining",
+            "activeLimit", "resetsAt", "secondsRemaining",
             "windowSeconds", "pace",
         }
 
@@ -113,34 +115,35 @@ class TestJson:
         }
 
 
-class TestDirective:
-    """The signal a downstream service subscribes to."""
+class TestDirectives:
+    """What a downstream service subscribes to: one entry per meter."""
 
-    def _directive(self, capsys):
+    def _rows(self, capsys):
         main(["--demo", "--json"])
-        return json.loads(capsys.readouterr().out)["directive"]
+        return json.loads(capsys.readouterr().out)["directives"]
 
-    def test_carries_a_usable_rate_multiplier(self, capsys):
-        directive = self._directive(capsys)
-        assert isinstance(directive["rateAdjustment"], float)
-        assert 0.0 <= directive["rateAdjustment"] <= 10.0
+    def test_one_entry_per_meter(self, capsys):
+        assert len(self._rows(capsys)) == 5
 
-    def test_names_the_constraint_it_came_from(self, capsys):
-        directive = self._directive(capsys)
-        assert directive["constraint"]["provider"] in {"claude", "codex"}
-        assert directive["constraint"]["label"]
+    def test_every_entry_names_its_provider_and_meter(self, capsys):
+        for row in self._rows(capsys):
+            assert row["provider"] in {"claude", "codex"}
+            assert row["label"]
 
-    def test_picks_the_worst_pace_not_the_fullest_bar(self, capsys):
-        """82% with 5 days left outranks 91% with 18 hours left."""
-        directive = self._directive(capsys)
-        assert directive["verdict"] == "slow_down"
-        assert directive["constraint"]["provider"] == "codex"
-        assert directive["constraint"]["percent"] == 82.0
+    def test_each_carries_its_own_rate_multiplier(self, capsys):
+        for row in self._rows(capsys):
+            assert 0.0 <= row["rateAdjustment"] <= 10.0
 
-    def test_ignores_windows_too_new_to_judge(self, capsys):
-        """A window minutes old produces a wild ratio; it must not win."""
-        directive = self._directive(capsys)
-        assert "Spark" not in directive["constraint"]["label"]
+    def test_each_carries_its_own_reset_time(self, capsys):
+        for row in self._rows(capsys):
+            assert row["resetsAt"]
+            assert row["secondsRemaining"] > 0
+
+    def test_no_single_combined_instruction(self, capsys):
+        """One multiplier for everything reads as advice about everything."""
+        main(["--demo", "--json"])
+        payload = json.loads(capsys.readouterr().out)
+        assert "directive" not in payload
 
 
 class TestExitCodes:
@@ -149,7 +152,7 @@ class TestExitCodes:
         capsys.readouterr()
 
     def test_failure_is_non_zero(self, monkeypatch, capsys):
-        async def broken():
+        async def broken(max_age=0):
             return [ProviderSnapshot(key="claude", display_name="Claude", error="nope")]
 
         monkeypatch.setattr("agents_fuel_gauge.cli.fetch_all", broken)
@@ -159,7 +162,7 @@ class TestExitCodes:
 
 class TestDemoMode:
     def test_demo_never_touches_the_network(self, monkeypatch, capsys):
-        def explode():
+        def explode(*args, **kwargs):
             raise AssertionError("--demo must not hit the network")
 
         monkeypatch.setattr("agents_fuel_gauge.cli.fetch_all", explode)

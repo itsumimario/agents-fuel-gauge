@@ -44,7 +44,7 @@ def demo_snapshots() -> list[ProviderSnapshot]:
             Gauge(
                 "7d", "Fable", 91.0,
                 now + timedelta(hours=18, minutes=8),
-                severity="critical", runs_out_first=True,
+                severity="critical", active_limit=True,
                 window_seconds=ONE_WEEK,
             ),
         ],
@@ -61,7 +61,7 @@ def demo_snapshots() -> list[ProviderSnapshot]:
             Gauge(
                 "7d", "all models", 82.0,
                 now + timedelta(days=5, hours=2),
-                severity="warning", runs_out_first=True,
+                severity="warning",
                 window_seconds=ONE_WEEK,
             ),
             Gauge(

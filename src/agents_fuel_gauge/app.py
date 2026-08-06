@@ -12,9 +12,11 @@ from textual.widgets import Footer, Header, Static
 from .models import (
     Gauge,
     ProviderSnapshot,
+    directives,
     format_age,
     format_countdown,
-    overall_directive,
+    format_remaining,
+    format_reset_at,
 )
 from .sources import fetch_all
 
@@ -78,14 +80,20 @@ class GaugeBar(Static):
         pace_mark = PACE_MARK.get(pace.verdict, "  ") if pace else "  "
         pace_style = PACE_COLOR.get(pace.verdict, "dim") if pace else "dim"
 
-        countdown = format_countdown(gauge.seconds_remaining())
+        remaining = gauge.seconds_remaining()
+        relative = format_remaining(remaining)
+        reset_full = format_reset_at(gauge.resets_at, "full")
+        reset_short = format_reset_at(gauge.resets_at, "short")
+        reset_time = format_reset_at(gauge.resets_at, "time")
+
+        countdown = format_countdown(remaining)
         compact = countdown.replace(" ", "")
         # Coarsest readable form for the very narrowest terminals: the leading
         # unit only, "18h 07m" -> "18h". Less precise, but "roughly 18 hours"
         # beats no reset time at all, which is what cropping leaves you with.
         leading = re.match(r"\d+[dhms]", compact)
         coarse = leading.group(0) if leading else compact
-        marker = "◆" if gauge.runs_out_first else " "
+        marker = "◆" if gauge.active_limit else " "
         width = self.size.width
         pct_style = f"bold {color}"
 
@@ -94,10 +102,25 @@ class GaugeBar(Static):
         # in step — computing a width separately from the output invites them
         # to drift apart by a space, which is precisely how the countdown got
         # cropped before.
+        # Both forms of "when does it reset" are shown wherever they fit: the
+        # wall-clock moment to plan around, and the distance to it. The
+        # absolute time is the first to go when space runs short, because the
+        # relative one still answers "have I got time for this".
         variants = (
-            # segments, marker width, minimum label
             ([(f"{gauge.percent:>4.0f}%", pct_style),
-              (f"  {countdown}", "dim"),
+              (f"  {reset_full}", "dim"),
+              (f"  {relative:>6}", "dim"),
+              (f" {pace_mark}", pace_style)], 2, MIN_LABEL),
+            ([(f"{gauge.percent:>4.0f}%", pct_style),
+              (f"  {reset_short}", "dim"),
+              (f"  {relative:>6}", "dim"),
+              (f" {pace_mark}", pace_style)], 2, MIN_LABEL),
+            ([(f"{gauge.percent:>4.0f}%", pct_style),
+              (f"  {reset_time}", "dim"),
+              (f" {relative:>6}", "dim"),
+              (f" {pace_mark}", pace_style)], 2, MIN_LABEL),
+            ([(f"{gauge.percent:>4.0f}%", pct_style),
+              (f"  {relative}", "dim"),
               (f" {pace_mark}", pace_style)], 2, MIN_LABEL),
             ([(f"{gauge.percent:>4.0f}%", pct_style),
               (f" {compact}", "dim")], 2, MIN_LABEL),
@@ -137,12 +160,12 @@ class GaugeBar(Static):
         text = Text(no_wrap=True, overflow="crop")
         if marker_width:
             text.append(
-                f"{marker} ", style=f"bold {color}" if gauge.runs_out_first else "dim"
+                f"{marker} ", style=f"bold {color}" if gauge.active_limit else "dim"
             )
         if label_width:
             text.append(
                 f"{label:<{label_width}}",
-                style="bold" if gauge.runs_out_first else "",
+                style="bold" if gauge.active_limit else "",
             )
         if bar_width:
             filled = min(bar_width, round(gauge.percent / 100 * bar_width))
@@ -240,44 +263,41 @@ class ProviderPanel(Vertical):
 
 
 class StatusLine(Static):
-    """One line naming the quota that will stop you before any of the others."""
+    """Per-meter advice, one line each, every line naming its own meter.
+
+    This used to rank all gauges together and announce a single winner as
+    "runs out first", with one rate multiplier. Both halves were wrong. The
+    ranking implied a prediction the data cannot make — `used / elapsed` is an
+    average over the whole window, so a meter burned hard days ago and idle
+    since is indistinguishable from one burning steadily now, and it would be
+    named the winner on the strength of usage that had already stopped. And a
+    bare multiplier read as guidance for everything you were running, when it
+    only ever described one window.
+
+    So: no cross-provider ranking, and no unattributed instruction.
+    """
 
     def set_snapshots(self, snapshots: list[ProviderSnapshot]) -> None:
-        candidates = [
-            (snap, gauge)
-            for snap in snapshots
-            for gauge in snap.gauges
-            if gauge.runs_out_first
-        ] or [
-            (snap, snap.worst) for snap in snapshots if snap.worst is not None
-        ]
-        if not candidates:
-            self.update(Text("no usage data", style="dim"))
-            return
+        rows = [d for d in directives(snapshots) if d["actionable"]]
+        # Only the meters actually drifting are worth a line; listing the
+        # healthy ones buries the two that matter.
+        notable = [d for d in rows if d["verdict"] in ("slow_down", "exhausted")]
 
-        snap, gauge = max(candidates, key=lambda pair: pair[1].percent)
-        color = SEVERITY_COLOR.get(gauge.severity, "green")
-        # Wrap rather than ellipsize. This line is ~95 characters and every
-        # part of it matters — which limit binds, when it resets, what to do.
-        # Truncating drops the reset time and the advice, and there is always
-        # spare vertical room below the panels to spend instead.
         text = Text(no_wrap=False, overflow="fold")
-        text.append("runs out first: ", style="dim")
-        text.append(f"{snap.display_name} {gauge.label}", style=f"bold {color}")
-        text.append("  ", style="")
-        text.append(f"{gauge.percent:.0f}% used", style=f"bold {color}")
-        remaining = format_countdown(gauge.seconds_remaining())
-        if remaining:
-            text.append(f"  ·  resets in {remaining}", style="dim")
-
-        # What to do about it, which the percentage alone never says.
-        directive = overall_directive(snapshots)
-        if directive.get("advice") and directive["verdict"] != "unknown":
-            text.append("  ·  ", style="dim")
-            text.append(
-                directive["advice"],
-                style=PACE_COLOR.get(directive["verdict"], "dim"),
-            )
+        if not rows:
+            text.append("no pace estimate yet", style="dim")
+        elif not notable:
+            text.append("every meter is within its budget", style="green")
+        else:
+            for index, row in enumerate(notable):
+                if index:
+                    text.append("\n")
+                name = row["provider"].capitalize()
+                text.append(f"{name} {row['label']}", style="bold")
+                text.append(": ", style="dim")
+                text.append(
+                    row["advice"], style=PACE_COLOR.get(row["verdict"], "dim")
+                )
         self.update(text)
 
 

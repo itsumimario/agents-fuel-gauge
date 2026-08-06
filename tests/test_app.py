@@ -36,7 +36,7 @@ def _snapshots(fable_percent: float = 91.0, with_scoped: bool = True):
                 fable_percent,
                 NOW + timedelta(hours=18),
                 severity="critical",
-                runs_out_first=True,
+                active_limit=True,
                 window_seconds=ONE_WEEK,
             )
         )
@@ -80,7 +80,7 @@ async def test_scoped_fable_bar_is_rendered(stub):
         await pilot.pause()
         widget = next(b for b in app.query(GaugeBar) if b.gauge.scope == "Fable")
         assert widget.gauge.percent == 91.0
-        assert widget.gauge.runs_out_first is True
+        assert widget.gauge.active_limit is True
 
         drawn = widget.render().plain
         assert "7d Fable" in drawn
@@ -88,16 +88,30 @@ async def test_scoped_fable_bar_is_rendered(stub):
         assert "◆" in drawn, "the first-to-run-out gauge gets a marker"
 
 
-async def test_status_line_names_what_runs_out_first(stub):
+async def test_status_line_gives_per_meter_advice(stub):
+    """No cross-provider ranking, and no unattributed instruction."""
     app = FuelGaugeApp(interval=3600)
     async with app.run_test() as pilot:
         await pilot.pause()
-        # Codex 98% outranks Fable 91%; both are flagged, the hotter one wins.
         text = app.query(StatusLine).first().render().plain
-        assert "Codex" in text and "98" in text
-        # Plain wording, not the optimization-theory term it started as.
-        assert "runs out first" in text
+
+        # The claim that was removed: one meter crowned across providers.
+        assert "runs out first" not in text
         assert "binding" not in text.lower()
+
+        # Any advice shown must name the meter it applies to.
+        if "meter" in text:
+            assert "Claude" in text or "Codex" in text
+            assert ":" in text
+
+
+async def test_advice_never_claims_to_know_the_current_rate(stub):
+    """A snapshot yields an average since the window opened, not a live rate."""
+    app = FuelGaugeApp(interval=3600)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        text = app.query(StatusLine).first().render().plain
+        assert "of current rate" not in text
 
 
 async def test_each_panel_reports_its_own_age(stub):
@@ -246,14 +260,26 @@ class TestNarrowTerminal:
                 assert "ago" in panel.border_subtitle or "now" in panel.border_subtitle
 
     @pytest.mark.parametrize("width", [120, 100, 70, 60, 50, 40, 32, 26])
-    async def test_status_line_never_loses_the_reset_time_or_advice(self, stub, width):
-        """It is ~95 chars; ellipsizing dropped exactly the useful tail."""
+    async def test_status_line_advice_is_never_truncated(self, stub, width):
+        """It wraps rather than ellipsizing, so no advice is ever half-shown."""
         app = FuelGaugeApp(interval=3600)
         async with app.run_test(size=(width, 30)) as pilot:
             await pilot.pause()
             text = app.query_one(StatusLine).render().plain
-            assert "resets in" in text, f"reset time lost at width {width}"
-            assert "rate" in text or "spent" in text, f"advice lost at width {width}"
+            assert text.strip(), f"status line empty at width {width}"
+            assert "…" not in text, f"advice truncated at width {width}"
+
+    @pytest.mark.parametrize("width", [120, 80, 60, 50, 44])
+    async def test_absolute_reset_time_is_shown_when_there_is_room(self, stub, width):
+        """A duration alone means doing arithmetic against your calendar."""
+        app = FuelGaugeApp(interval=3600)
+        async with app.run_test(size=(width, 30)) as pilot:
+            await pilot.pause()
+            for bar in app.query(GaugeBar):
+                line = bar.render().plain
+                assert re.search(r"\d{1,2}:\d{2}", line), (
+                    f"no clock time at width {width}: {line!r}"
+                )
 
     async def test_status_line_grows_instead_of_truncating(self, stub):
         """Vertical space below the panels is free; horizontal space is not."""

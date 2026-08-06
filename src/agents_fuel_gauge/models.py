@@ -58,6 +58,42 @@ def format_countdown(seconds: int | None) -> str:
     return f"{minutes}m {secs:02d}s"
 
 
+def format_reset_at(when: datetime | None, style: str = "full") -> str:
+    """The wall-clock moment a window resets, in local time.
+
+    A duration alone ("1d 16h") is hard to plan around; an absolute time is
+    what you compare against your calendar. Both are shown, because either one
+    alone leaves you doing arithmetic.
+    """
+    if when is None:
+        return ""
+    local = when.astimezone()
+    if style == "full":
+        return f"{local:%a} {local:%b} {local.day} {local:%H:%M}"
+    if style == "short":
+        return f"{local:%b} {local.day} {local:%H:%M}"
+    return f"{local:%H:%M}"
+
+
+def format_remaining(seconds: int | None) -> str:
+    """Days and hours, or just hours inside a day, or minutes inside an hour.
+
+    Coarser than `format_countdown` on purpose: the exact reset time is shown
+    beside it, so this only has to answer "roughly how long have I got".
+    """
+    if seconds is None:
+        return ""
+    total = int(seconds)
+    days, rem = divmod(total, 86_400)
+    hours, rem = divmod(rem, 3_600)
+    if days:
+        return f"{days}d {hours}h"
+    if hours:
+        return f"{hours}h"
+    minutes = rem // 60
+    return f"{minutes}m" if minutes else "<1m"
+
+
 def format_age(captured_at: datetime | None, now: datetime | None = None) -> str:
     """How long ago a snapshot was taken, for per-provider freshness."""
     if captured_at is None:
@@ -86,55 +122,49 @@ def mask_email(email: str | None) -> str | None:
     return f"{local[0]}•••@{head[0]}•••.{rest}"
 
 
-def overall_directive(
+def directives(
     snapshots: list["ProviderSnapshot"], now: datetime | None = None
-) -> dict:
-    """The single instruction a downstream consumer should act on.
+) -> list[dict]:
+    """One instruction per meter — never one instruction for all of them.
 
-    A caller steering its own request rate does not want five bars; it wants
-    one number. The binding constraint is whichever gauge is projected to
-    overshoot hardest, because respecting that one implicitly respects every
-    looser one. `rateAdjustment` is safe to multiply straight into a rate.
+    An earlier version ranked every gauge together and emitted a single
+    "runs out first" winner with one rate multiplier. That was wrong twice
+    over. Ranking across providers implies a prediction the data cannot
+    support: `used / elapsed` is the *average rate so far*, so a meter that
+    burned hard days ago and has been idle since looks exactly like one
+    burning steadily right now. And a lone multiplier reads as advice about
+    everything you are running, when it only ever described one window.
+
+    Each entry here names its own meter and applies only to that meter.
     """
-    ranked: list[tuple[ProviderSnapshot, Gauge, Pace]] = []
+    out: list[dict] = []
     for snapshot in snapshots:
         for gauge in snapshot.gauges:
             pace = gauge.pace(now)
-            if pace is not None:
-                ranked.append((snapshot, gauge, pace))
-
-    # A window that has barely opened produces a wild ratio; letting it win
-    # would hand the caller a throttle instruction built on minutes of data.
-    actionable = [row for row in ranked if row[2].actionable]
-    if not actionable:
-        return {
-            "verdict": "unknown",
-            "rateAdjustment": None,
-            "advice": "hold current rate",
-            "reason": (
-                "no window has run long enough to project"
-                if ranked
-                else "no window has enough information to project"
-            ),
-        }
-
-    snapshot, gauge, pace = max(actionable, key=lambda row: row[2].ratio)
-    return {
-        "verdict": pace.verdict,
-        "rateAdjustment": round(pace.rate_adjustment, 3),
-        "advice": pace.advice,
-        "constraint": {
-            "provider": snapshot.key,
-            "label": gauge.label,
-            "percent": gauge.percent,
-            "severity": gauge.severity,
-            "secondsRemaining": gauge.seconds_remaining(now),
-        },
-        "projectedUsagePercent": (
-            None if pace.ratio == float("inf") else round(pace.ratio * 100, 1)
-        ),
-        "exhaustsInSeconds": pace.exhausts_in_seconds,
-    }
+            if pace is None:
+                continue
+            out.append(
+                {
+                    "provider": snapshot.key,
+                    "label": gauge.label,
+                    "scope": gauge.scope,
+                    "window": gauge.window,
+                    "percent": gauge.percent,
+                    "severity": gauge.severity,
+                    "verdict": pace.verdict,
+                    "actionable": pace.actionable,
+                    "rateAdjustment": round(pace.rate_adjustment, 3),
+                    "advice": pace.advice,
+                    "projectedUsagePercent": (
+                        None
+                        if pace.ratio == float("inf")
+                        else round(pace.ratio * 100, 1)
+                    ),
+                    "resetsAt": gauge.resets_at.isoformat() if gauge.resets_at else None,
+                    "secondsRemaining": gauge.seconds_remaining(now),
+                }
+            )
+    return out
 
 
 @dataclass(frozen=True)
@@ -171,12 +201,19 @@ class Pace:
 
     @property
     def advice(self) -> str:
+        """Always says "its average rate", never "current rate".
+
+        The rate is inferred from `used / elapsed` across the whole window, so
+        it is an average, not a live measurement — a meter used heavily days ago
+        and idle since reports the same figure as one burning steadily now.
+        Wording that claims otherwise would overstate what one snapshot knows.
+        """
         return {
-            "exhausted": "budget spent; wait for reset",
-            "slow_down": f"slow to {self.rate_adjustment:.0%} of current rate",
-            "on_track": "continue at current rate",
-            "spare_capacity": f"room for {self.rate_adjustment:.1f}x current rate",
-            "too_early": "too early in the window to judge; hold current rate",
+            "exhausted": "spent; wait for its reset",
+            "slow_down": f"slow this meter to {self.rate_adjustment:.0%} of its average rate",
+            "on_track": "this meter's average rate lasts to its reset",
+            "spare_capacity": f"room for {self.rate_adjustment:.1f}x this meter's average rate",
+            "too_early": "window too new to judge this meter",
         }[self.verdict]
 
     def to_dict(self) -> dict:
@@ -201,7 +238,7 @@ class Gauge:
     percent: float
     resets_at: datetime | None = None
     severity: str = "normal"
-    runs_out_first: bool = False
+    active_limit: bool = False
     window_seconds: int | None = None
     """Length of the window. Carried from the provider rather than parsed back
     out of the `window` label, which would break on any format we didn't
@@ -372,7 +409,7 @@ class ProviderSnapshot:
                     "label": g.label,
                     "percent": g.percent,
                     "severity": g.severity,
-                    "runsOutFirst": g.runs_out_first,
+                    "activeLimit": g.active_limit,
                     "resetsAt": g.resets_at.isoformat() if g.resets_at else None,
                     "secondsRemaining": g.seconds_remaining(),
                     "windowSeconds": g.window_seconds,
