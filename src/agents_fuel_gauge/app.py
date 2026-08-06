@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.containers import Vertical, VerticalScroll
@@ -78,6 +80,11 @@ class GaugeBar(Static):
 
         countdown = format_countdown(gauge.seconds_remaining())
         compact = countdown.replace(" ", "")
+        # Coarsest readable form for the very narrowest terminals: the leading
+        # unit only, "18h 07m" -> "18h". Less precise, but "roughly 18 hours"
+        # beats no reset time at all, which is what cropping leaves you with.
+        leading = re.match(r"\d+[dhms]", compact)
+        coarse = leading.group(0) if leading else compact
         marker = "◆" if gauge.runs_out_first else " "
         width = self.size.width
         pct_style = f"bold {color}"
@@ -97,6 +104,7 @@ class GaugeBar(Static):
             ([(f"{gauge.percent:.0f}%", pct_style),
               (f" {compact}", "dim")], 0, 3),
             ([(compact, "dim")], 0, 0),
+            ([(coarse, "dim")], 0, 0),
         )
 
         tail, marker_width = variants[-1][0], 0
@@ -249,7 +257,11 @@ class StatusLine(Static):
 
         snap, gauge = max(candidates, key=lambda pair: pair[1].percent)
         color = SEVERITY_COLOR.get(gauge.severity, "green")
-        text = Text(no_wrap=True, overflow="ellipsis")
+        # Wrap rather than ellipsize. This line is ~95 characters and every
+        # part of it matters — which limit binds, when it resets, what to do.
+        # Truncating drops the reset time and the advice, and there is always
+        # spare vertical room below the panels to spend instead.
+        text = Text(no_wrap=False, overflow="fold")
         text.append("runs out first: ", style="dim")
         text.append(f"{snap.display_name} {gauge.label}", style=f"bold {color}")
         text.append("  ", style="")

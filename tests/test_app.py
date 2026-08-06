@@ -10,6 +10,8 @@ from agents_fuel_gauge.app import FuelGaugeApp, GaugeBar, ProviderPanel, StatusL
 from agents_fuel_gauge.models import Gauge, ProviderSnapshot
 
 NOW = datetime.now(timezone.utc)
+FIVE_HOURS = 5 * 3_600
+ONE_WEEK = 7 * 86_400
 
 
 def _snapshots(fable_percent: float = 91.0, with_scoped: bool = True):
@@ -20,8 +22,10 @@ def _snapshots(fable_percent: float = 91.0, with_scoped: bool = True):
         account="a•••@e•••.com",
         captured_at=NOW,
         gauges=[
-            Gauge("5h", "all models", 5.0, NOW + timedelta(hours=1)),
-            Gauge("7d", "all models", 50.0, NOW + timedelta(hours=18)),
+            Gauge("5h", "all models", 5.0, NOW + timedelta(hours=1),
+                  window_seconds=FIVE_HOURS),
+            Gauge("7d", "all models", 50.0, NOW + timedelta(hours=18),
+                  window_seconds=ONE_WEEK),
         ],
     )
     if with_scoped:
@@ -33,6 +37,7 @@ def _snapshots(fable_percent: float = 91.0, with_scoped: bool = True):
                 NOW + timedelta(hours=18),
                 severity="critical",
                 runs_out_first=True,
+                window_seconds=ONE_WEEK,
             )
         )
     codex = ProviderSnapshot(
@@ -41,7 +46,8 @@ def _snapshots(fable_percent: float = 91.0, with_scoped: bool = True):
         plan="Pro",
         captured_at=NOW,
         gauges=[
-            Gauge("7d", "all models", 98.0, NOW + timedelta(days=2), "critical", True)
+            Gauge("7d", "all models", 98.0, NOW + timedelta(days=2), "critical", True,
+                  window_seconds=ONE_WEEK)
         ],
     )
     return [claude, codex]
@@ -238,3 +244,23 @@ class TestNarrowTerminal:
                 panel.refresh_titles()
             for panel in app.query(ProviderPanel):
                 assert "ago" in panel.border_subtitle or "now" in panel.border_subtitle
+
+    @pytest.mark.parametrize("width", [120, 100, 70, 60, 50, 40, 32, 26])
+    async def test_status_line_never_loses_the_reset_time_or_advice(self, stub, width):
+        """It is ~95 chars; ellipsizing dropped exactly the useful tail."""
+        app = FuelGaugeApp(interval=3600)
+        async with app.run_test(size=(width, 30)) as pilot:
+            await pilot.pause()
+            text = app.query_one(StatusLine).render().plain
+            assert "resets in" in text, f"reset time lost at width {width}"
+            assert "rate" in text or "spent" in text, f"advice lost at width {width}"
+
+    async def test_status_line_grows_instead_of_truncating(self, stub):
+        """Vertical space below the panels is free; horizontal space is not."""
+        heights = {}
+        for width in (120, 50):
+            app = FuelGaugeApp(interval=3600)
+            async with app.run_test(size=(width, 30)) as pilot:
+                await pilot.pause()
+                heights[width] = app.query_one(StatusLine).size.height
+        assert heights[50] > heights[120]

@@ -3,7 +3,7 @@ Screen {
 }
 
 #status {
-    height: 1;
+    height: auto;
     padding: 0 2;
     margin: 1 1 0 1;
 }
