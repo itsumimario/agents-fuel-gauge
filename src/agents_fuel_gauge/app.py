@@ -19,6 +19,12 @@ from .sources import fetch_all
 BAR_FULL = "█"
 BAR_EMPTY = "░"
 
+# Layout budget. The bar is the only element allowed to shrink to nothing,
+# because it is decoration for a number shown right beside it.
+LABEL_WIDTH = 24
+MIN_LABEL = 8
+MIN_BAR = 6
+
 SEVERITY_COLOR = {
     "normal": "green",
     "warning": "yellow",
@@ -55,41 +61,88 @@ class GaugeBar(Static):
         self.refresh()
 
     def render(self) -> Text:
+        """Lay the row out by priority, not by fixed columns.
+
+        The reset time is the whole reason to look at a gauge, and it used to
+        be the first thing lost: the bar had a minimum width, so on a narrow
+        terminal the row overflowed and the right-hand edge — the countdown —
+        got cropped. The bar is the least information-dense element here, so it
+        is now the one that yields. It shrinks, then disappears entirely, before
+        anything you actually read is touched.
+        """
         gauge = self.gauge
         color = SEVERITY_COLOR.get(gauge.severity, "green")
-
         pace = gauge.pace()
         pace_mark = PACE_MARK.get(pace.verdict, "  ") if pace else "  "
+        pace_style = PACE_COLOR.get(pace.verdict, "dim") if pace else "dim"
 
-        label_width, meter_width, reset_width, pace_width = 26, 6, 10, 3
-        bar_width = max(
-            8,
-            self.size.width
-            - label_width - meter_width - reset_width - pace_width - 2,
-        )
-        filled = min(bar_width, round(gauge.percent / 100 * bar_width))
-
+        countdown = format_countdown(gauge.seconds_remaining())
+        compact = countdown.replace(" ", "")
         marker = "◆" if gauge.runs_out_first else " "
+        width = self.size.width
+        pct_style = f"bold {color}"
+
+        # Tail variants, richest first, each as the exact segments that will be
+        # drawn. Measuring the same list we render from is what keeps the two
+        # in step — computing a width separately from the output invites them
+        # to drift apart by a space, which is precisely how the countdown got
+        # cropped before.
+        variants = (
+            # segments, marker width, minimum label
+            ([(f"{gauge.percent:>4.0f}%", pct_style),
+              (f"  {countdown}", "dim"),
+              (f" {pace_mark}", pace_style)], 2, MIN_LABEL),
+            ([(f"{gauge.percent:>4.0f}%", pct_style),
+              (f" {compact}", "dim")], 2, MIN_LABEL),
+            ([(f"{gauge.percent:.0f}%", pct_style),
+              (f" {compact}", "dim")], 0, 3),
+            ([(compact, "dim")], 0, 0),
+        )
+
+        tail, marker_width = variants[-1][0], 0
+        for segments, mark_w, min_label in variants:
+            if mark_w + min_label + sum(len(t) for t, _ in segments) <= width:
+                tail, marker_width = segments, mark_w
+                break
+
+        tail_width = sum(len(t) for t, _ in tail)
+        available = max(0, width - marker_width - tail_width)
+
+        if available >= LABEL_WIDTH + MIN_BAR + 1:
+            label_width = LABEL_WIDTH
+            bar_width = available - label_width - 1
+        elif available >= MIN_LABEL + MIN_BAR + 1:
+            bar_width = MIN_BAR
+            label_width = available - bar_width - 1
+        else:
+            # Too tight for any bar. Let the label shrink past its usual floor
+            # rather than push the countdown off the edge.
+            bar_width = 0
+            label_width = available
+
         label = gauge.label
-        if len(label) > label_width - 3:
-            label = label[: label_width - 4] + "…"
+        if label_width and len(label) > label_width:
+            # "text…" is one char longer than the text it replaces, so with a
+            # single column to spend the ellipsis has to stand alone.
+            label = (label[: label_width - 1] + "…") if label_width >= 2 else "…"
 
         text = Text(no_wrap=True, overflow="crop")
-        text.append(f"{marker} ", style=f"bold {color}" if gauge.runs_out_first else "dim")
-        text.append(f"{label:<{label_width - 2}}", style="bold" if gauge.runs_out_first else "")
-        text.append(BAR_FULL * filled, style=color)
-        text.append(BAR_EMPTY * (bar_width - filled), style="bright_black")
-        text.append(f"{gauge.percent:>5.0f}%", style=f"bold {color}")
-        text.append(
-            f"  {format_countdown(gauge.seconds_remaining()):>{reset_width}}",
-            style="dim",
-        )
-        # Pace is about drift from budget, which is a different question from
-        # severity, so it gets its own colour rather than inheriting the bar's.
-        text.append(
-            f" {pace_mark}",
-            style=PACE_COLOR.get(pace.verdict, "dim") if pace else "dim",
-        )
+        if marker_width:
+            text.append(
+                f"{marker} ", style=f"bold {color}" if gauge.runs_out_first else "dim"
+            )
+        if label_width:
+            text.append(
+                f"{label:<{label_width}}",
+                style="bold" if gauge.runs_out_first else "",
+            )
+        if bar_width:
+            filled = min(bar_width, round(gauge.percent / 100 * bar_width))
+            text.append(" ")
+            text.append(BAR_FULL * filled, style=color)
+            text.append(BAR_EMPTY * (bar_width - filled), style="bright_black")
+        for segment, style in tail:
+            text.append(segment, style=style)
         return text
 
 
@@ -128,8 +181,28 @@ class ProviderPanel(Vertical):
         'updated at' would be a lie the moment either side errors or retries.
         """
         self.border_title = self.snapshot.display_name
-        parts = [self.snapshot.subtitle, format_age(self.snapshot.captured_at)]
-        self.border_subtitle = " · ".join(p for p in parts if p)
+
+        # Textual truncates a too-long border subtitle from the right, which is
+        # where the age sits — the one part that changes. So drop the account,
+        # then the plan, rather than let the freshness be silently cut off.
+        age = format_age(self.snapshot.captured_at)
+        # Width is 0 until the first layout pass. Assume there is room rather
+        # than degrade on an unknown, or the panel flashes a stripped subtitle
+        # before the first tick corrects it.
+        budget = (
+            self.size.width - len(self.snapshot.display_name) - 6
+            if self.size.width
+            else 10_000
+        )
+        for parts in (
+            [self.snapshot.plan, self.snapshot.account, age],
+            [self.snapshot.plan, age],
+            [age],
+        ):
+            candidate = " · ".join(p for p in parts if p)
+            if len(candidate) <= budget:
+                break
+        self.border_subtitle = candidate
 
     async def update_snapshot(self, snapshot: ProviderSnapshot) -> None:
         """Update in place when the shape is unchanged; rebuild when it isn't.

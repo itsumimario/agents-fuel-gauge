@@ -1,5 +1,6 @@
 """Headless tests that drive the real Textual app with the network stubbed out."""
 
+import re
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -186,3 +187,54 @@ async def test_bar_survives_a_narrow_terminal(stub):
         await pilot.pause()
         for bar in app.query(GaugeBar):
             assert bar.render().plain  # no exception, no empty render
+
+
+class TestNarrowTerminal:
+    """The reset countdown must survive any width.
+
+    It used to be the first casualty: the bar had a minimum width, so a narrow
+    terminal overflowed the row and the crop took the right-hand edge — where
+    the countdown lives.
+    """
+
+    RESET_TIME = re.compile(r"\d+[dhms]")
+
+    async def _rows(self, stub, width):
+        app = FuelGaugeApp(interval=3600)
+        async with app.run_test(size=(width, 24)) as pilot:
+            await pilot.pause()
+            return [(b.render().plain, b.size.width) for b in app.query(GaugeBar)]
+
+    @pytest.mark.parametrize("width", [120, 100, 80, 60, 50, 44, 38, 32, 26, 20, 16])
+    async def test_countdown_is_always_visible(self, stub, width):
+        for line, _ in await self._rows(stub, width):
+            assert self.RESET_TIME.search(line), f"no reset time at width {width}: {line!r}"
+
+    @pytest.mark.parametrize("width", [120, 100, 80, 60, 50, 44, 38, 32, 26, 20, 16])
+    async def test_row_never_overflows_its_widget(self, stub, width):
+        """An overflow is what silently crops the countdown."""
+        for line, widget_width in await self._rows(stub, width):
+            assert len(line) <= widget_width, (
+                f"width {width}: rendered {len(line)} chars into {widget_width}"
+            )
+
+    async def test_bar_is_what_yields_first(self, stub):
+        wide = await self._rows(stub, 100)
+        narrow = await self._rows(stub, 40)
+        assert "█" in wide[0][0]
+        # The bar shrinks or vanishes; the numbers do not.
+        assert len(narrow[0][0].replace("█", "").replace("░", "")) > 0
+
+    async def test_percentage_survives_until_the_very_end(self, stub):
+        for line, _ in await self._rows(stub, 32):
+            assert "%" in line
+
+    async def test_panel_age_survives_narrow_widths(self, stub):
+        """Textual crops a subtitle from the right, where the age sits."""
+        app = FuelGaugeApp(interval=3600)
+        async with app.run_test(size=(34, 24)) as pilot:
+            await pilot.pause()
+            for panel in app.query(ProviderPanel):
+                panel.refresh_titles()
+            for panel in app.query(ProviderPanel):
+                assert "ago" in panel.border_subtitle or "now" in panel.border_subtitle
