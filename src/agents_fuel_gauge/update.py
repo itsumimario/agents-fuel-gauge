@@ -28,6 +28,23 @@ def _run(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess:
     )
 
 
+def _version_on_disk(root: Path) -> str | None:
+    """Read `__version__` from the checkout rather than from memory.
+
+    The running process imported its version at startup, so after a pull the
+    in-memory value is stale by definition. Reading the file is the only way to
+    report what you just moved *to*.
+    """
+    init = root / "src" / "agents_fuel_gauge" / "__init__.py"
+    try:
+        for line in init.read_text().splitlines():
+            if line.startswith("__version__"):
+                return line.split("=", 1)[1].strip().strip("\"'")
+    except OSError:
+        pass
+    return None
+
+
 def _checkout_root() -> Path | None:
     """The git working tree this module lives in, if any."""
     here = Path(__file__).resolve().parent
@@ -48,6 +65,7 @@ def _update_checkout(root: Path) -> int:
         return 1
 
     before = _run("git", "-C", str(root), "rev-parse", "--short", "HEAD").stdout.strip()
+    version_before = _version_on_disk(root)
     print(f"updating {root} …")
 
     pull = _run("git", "-C", str(root), "pull", "--ff-only")
@@ -59,10 +77,15 @@ def _update_checkout(root: Path) -> int:
 
     after = _run("git", "-C", str(root), "rev-parse", "--short", "HEAD").stdout.strip()
     if before == after:
-        print(f"already up to date ({after})")
+        label = f"v{version_before} " if version_before else ""
+        print(f"already up to date ({label}{after})")
         return 0
 
-    print(f"updated {before} -> {after}")
+    version_after = _version_on_disk(root)
+    if version_before and version_after and version_before != version_after:
+        print(f"updated v{version_before} -> v{version_after}  ({before} -> {after})")
+    else:
+        print(f"updated {before} -> {after}")
     if shutil.which("uv"):
         # Picks up any dependency changes; harmless when there are none.
         install = _run("uv", "tool", "install", "--force", "--editable", str(root))

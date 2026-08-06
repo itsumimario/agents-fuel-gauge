@@ -110,3 +110,34 @@ def test_update_flag_is_wired_up(monkeypatch):
     )
     assert cli.main(["--update"]) == 0
     assert called
+
+
+class TestVersionReporting:
+    def test_reads_version_from_disk_not_memory(self, tmp_path):
+        """After a pull the imported __version__ is stale by definition."""
+        pkg = tmp_path / "src" / "agents_fuel_gauge"
+        pkg.mkdir(parents=True)
+        (pkg / "__init__.py").write_text('__version__ = "9.9.9"\n__author__ = "x"\n')
+        assert update_module._version_on_disk(tmp_path) == "9.9.9"
+
+    def test_missing_file_is_not_fatal(self, tmp_path):
+        assert update_module._version_on_disk(tmp_path) is None
+
+    def test_up_to_date_message_includes_the_version(self, checkout, monkeypatch, capsys):
+        pkg = checkout / "src" / "agents_fuel_gauge"
+        pkg.mkdir(parents=True)
+        (pkg / "__init__.py").write_text('__version__ = "1.2.3"\n')
+        subprocess.run(["git", "add", "-A"], cwd=checkout, check=True)
+        subprocess.run(["git", "commit", "-qm", "add pkg"], cwd=checkout, check=True)
+
+        monkeypatch.setattr(update_module, "_checkout_root", lambda: checkout)
+        real_run = update_module._run
+
+        def fake_run(*args, **kwargs):
+            if args[:2] == ("git", "-C") and "pull" in args:
+                return subprocess.CompletedProcess(args, 0, "Already up to date.\n", "")
+            return real_run(*args, **kwargs)
+
+        monkeypatch.setattr(update_module, "_run", fake_run)
+        assert update() == 0
+        assert "v1.2.3" in capsys.readouterr().out
