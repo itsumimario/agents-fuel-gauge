@@ -39,12 +39,19 @@ MIN_ELAPSED_FRACTION = 0.05
 # which is a status report, and a status report is exactly what an arrow is bad
 # at. Nobody reads a glyph and thinks "that describes my drift"; they read it as
 # an instruction. So it is one: down means ease off, up means there is room.
+#
+# Arrows are reserved for the verdicts that have a direction. The rest used to
+# get glyphs too — `·` for on-pace and `◦` for too-new — and at a normal
+# terminal font size those two are all but indistinguishable, while neither
+# says anything on its own. They are spelled out instead; see `Pace.display`.
+# `✗` survives because it is unmistakable and marks the one state you cannot
+# afford to overlook.
 PACE_ARROW = {
     "slow_down": "↓",
-    "exhausted": "✗",
     "spare_capacity": "↑",
-    "on_track": "·",
-    "too_early": "◦",
+    "exhausted": "✗",
+    "on_track": "",
+    "too_early": "",
 }
 
 
@@ -277,10 +284,25 @@ class Pace:
         if change is None:
             return {
                 "exhausted": "spent",
-                "on_track": "on budget",
+                "on_track": "on pace",
                 "too_early": "too new",
             }.get(self.verdict, "")
         return f"by {change:.0f}%{'+' if self.at_cap else ''}"
+
+    @property
+    def display(self) -> str:
+        """What the end of a row prints: an arrow with its size, or a word.
+
+        A glyph earns its place only when it carries a direction you can act
+        on. `·` for on-pace and `◦` for too-new carried none, and at a normal
+        terminal font size they are near-identical — two states that mean
+        opposite things about whether the reading can be trusted, told apart by
+        a pixel. Words cost a few columns and are unambiguous at any size.
+
+        `exhausted` keeps its `✗` *and* gets the word, because it is the one
+        state where being overlooked costs you something.
+        """
+        return f"{self.arrow} {self.change_label}".strip()
 
     @property
     def advice(self) -> str:

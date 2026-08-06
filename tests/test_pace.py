@@ -100,11 +100,36 @@ class TestArrowDirection:
         assert pace.arrow == "↑"
         assert pace.direction == "up"
 
-    def test_on_budget_points_nowhere(self):
+    def test_on_pace_points_nowhere(self):
         assert gauge(50, 0.50).pace(NOW).direction == "hold"
 
     def test_exhausted_points_down_because_there_is_nothing_left(self):
         assert gauge(100, 0.50).pace(NOW).direction == "down"
+
+
+class TestNoLookalikeGlyphs:
+    """`·` and `◦` were a pixel apart and meant opposite things.
+
+    One said the reading is fine, the other said the reading cannot be trusted
+    yet. Telling those apart mattered, and at a normal terminal font size it
+    was not possible. Only verdicts with a direction keep a glyph.
+    """
+
+    def test_states_without_a_direction_use_words(self):
+        assert gauge(50, 0.50).pace(NOW).display == "on pace"
+        assert gauge(12, 0.02).pace(NOW).display == "too new"
+
+    def test_those_states_carry_no_glyph_at_all(self):
+        for g in (gauge(50, 0.50), gauge(12, 0.02)):
+            assert g.pace(NOW).arrow == ""
+
+    def test_directions_keep_their_arrow_and_gain_the_size(self):
+        assert gauge(91, 0.40).pace(NOW).display.startswith("↓ by ")
+        assert gauge(20, 0.80).pace(NOW).display.startswith("↑ by ")
+
+    def test_exhausted_keeps_its_mark_and_says_so(self):
+        """The one state where being overlooked costs you something."""
+        assert gauge(100, 0.50).pace(NOW).display == "✗ spent"
 
 
 class TestChangeMagnitude:
@@ -129,8 +154,8 @@ class TestChangeMagnitude:
         for g in (gauge(50, 0.50), gauge(12, 0.02), gauge(100, 0.50)):
             assert g.pace(NOW).change_percent is None
 
-    def test_on_budget_reads_as_words_not_a_useless_zero(self):
-        assert gauge(50, 0.50).pace(NOW).change_label == "on budget"
+    def test_on_pace_reads_as_words_not_a_useless_zero(self):
+        assert gauge(50, 0.50).pace(NOW).change_label == "on pace"
 
     def test_a_capped_multiplier_is_marked_as_a_floor(self):
         """"by 900%" on a barely-used meter would read as a precise figure."""

@@ -53,9 +53,7 @@ PACE_ANSI = {
 LEGEND = (
     ("slow_down", "slow down"),
     ("spare_capacity", "speed up"),
-    ("on_track", "on budget"),
     ("exhausted", "spent"),
-    ("too_early", "too new to judge"),
 )
 LEGEND_NOTE = (
     "the % is how far to change that meter's average rate so far, "
@@ -203,7 +201,7 @@ def render_pretty(snapshots: list[ProviderSnapshot], color: bool) -> str:
             if pace:
                 arrow_tint = PACE_ANSI.get(pace.verdict, "") if color else ""
                 arrow_off = RESET if color and arrow_tint else ""
-                note = f"{arrow_tint}{pace.arrow} {pace.change_label}{arrow_off}"
+                note = f"{arrow_tint}{pace.display}{arrow_off}"
             else:
                 note = ""
             resets = format_reset_at(gauge.resets_at, "full")

@@ -70,12 +70,12 @@ PACE_COLOR = {
 
 # Every glyph that can appear in a row, spelled out once beneath the panels.
 # The rule is simple: any symbol on screen has to be decodable from the screen.
+# It is short now because most states no longer use a symbol at all — "on pace"
+# and "too new" print as those words, and a word needs no key.
 LEGEND = (
     ("slow_down", "slow down"),
     ("spare_capacity", "speed up"),
-    ("on_track", "on budget"),
     ("exhausted", "spent"),
-    ("too_early", "too new to judge"),
 )
 LEGEND_NOTE = (
     "the % is how far to change that meter's average rate so far, "
@@ -113,13 +113,10 @@ class GaugeBar(Static):
         pace_style = PACE_COLOR.get(pace.verdict, "dim") if pace else "dim"
 
         # The arrow is an instruction, and an instruction without a size is only
-        # half of one — "slow down" begs "by how much?". Where there is no
-        # magnitude — on budget, spent, window too new — the arrow stands alone
-        # rather than spelling itself out: "· on budget" is eleven columns
-        # saying "do nothing", and it was buying them by pushing the reset time
-        # off the row. The legend below the panels decodes the glyph anyway.
+        # half of one — "slow down" begs "by how much?". The states with no
+        # direction print as words instead of a glyph, so nothing in this column
+        # has to be looked up (see `Pace.display`).
         arrow = pace.arrow if pace else ""
-        sized = pace and pace.change_percent is not None
         remaining = gauge.seconds_remaining()
         compact = format_countdown(remaining).replace(" ", "")
         # Coarsest readable form for the very narrowest terminals: the leading
@@ -133,11 +130,10 @@ class GaugeBar(Static):
             "reset_short": (format_reset_at(gauge.resets_at, "short"), "dim", "<"),
             "reset_time": (format_reset_at(gauge.resets_at, "time"), "dim", "<"),
             "relative": (format_remaining(remaining), "dim", ">"),
-            "pace_full": (
-                f"{arrow} {pace.change_label}" if sized else arrow,
-                pace_style,
-                "<",
-            ),
+            "pace_full": (pace.display if pace else "", pace_style, "<"),
+            # Terse fallback for the narrowest terminals. Only the directional
+            # states survive it: if there is nothing to do, an empty column says
+            # so more clearly than a glyph nobody can place.
             "pace_mark": (arrow, pace_style, "<"),
             "compact": (compact, "dim", ">"),
             "coarse": (leading.group(0) if leading else compact, "dim", ">"),

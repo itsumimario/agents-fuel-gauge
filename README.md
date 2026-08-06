@@ -99,9 +99,14 @@ you should move, and says how far:
 | --- | --- |
 | `↓ by 92%` | **slow down.** At this rate the meter runs out before it resets — cut to 8% of it |
 | `↑ by 150%` | **speed up.** There is room for two and a half times this rate |
-| `·` | on budget — this rate lasts exactly to the reset |
-| `✗` | spent |
-| `◦` | window too new to judge |
+| `on pace` | this rate lasts exactly to the reset |
+| `✗ spent` | nothing left until it resets |
+| `too new` | the window has barely opened; no rate worth estimating yet |
+
+An arrow only appears where there's a direction to point. The rest are words,
+because a glyph you have to look up is a question, not information — and the
+`·` and `◦` this replaced were a pixel apart while meaning opposite things
+about whether the reading could be trusted.
 
 The percentage is the *change*, so `↓ by 92%` and "throttle to 8%" are the same
 instruction — the first is just readable at a glance. It's measured against
@@ -327,6 +332,10 @@ screenshots stay shareable.
   doesn't, so no Codex bar claims to be the binding one.
 - **Codex identifies windows by duration, not name.** On plans with no 5-hour
   throttle, no 5h bar is drawn because the API doesn't return one.
+- **Codex plan names are less specific than Claude's**, and that's upstream.
+  The usage endpoint returns a bare plan family (`pro`, `plus`) with no
+  multiplier variants, so the panel reads `Pro` where Claude reads `Max 20x`.
+  That is the whole name of the plan, not a truncation of one.
 - **Not every model gets its own bar** — only those with a dedicated sub-cap.
   The rest draw from the shared pool.
 

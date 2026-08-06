@@ -321,7 +321,9 @@ class TestNarrowTerminal:
             await pilot.pause()
             for bar in app.query(GaugeBar):
                 line = bar.render().plain
-                assert re.search(r"[↑↓·✗◦]", line), (
+                if not bar.gauge.pace().arrow:
+                    continue  # no direction to point; nothing to preserve
+                assert re.search(r"[↑↓✗]", line), (
                     f"no pace arrow at width {width}: {line!r}"
                 )
 
@@ -334,7 +336,7 @@ class TestNarrowTerminal:
             for bar in app.query(GaugeBar):
                 line = bar.render().plain
                 if bar.gauge.pace().change_percent is None:
-                    continue  # nothing to size: on budget, spent, or too new
+                    continue  # nothing to size: on pace, spent, or too new
                 assert re.search(r"[↑↓] by \d+%", line), (
                     f"no magnitude at width {width}: {line!r}"
                 )
@@ -345,25 +347,28 @@ class TestNarrowTerminal:
 
         Rows used to choose their layout independently, which was invisible
         while every tail was the same width. The moment the pace column carried
-        a magnitude it stopped being: a row reading "·" had eight columns spare
-        that a row reading "↓ by 92%" did not, so it picked a richer variant and
-        its bar started somewhere else entirely.
+        a magnitude it stopped being: a short row had eight columns spare that a
+        row reading "↓ by 92%" did not, so it picked a richer variant and its
+        bar started somewhere else entirely.
         """
         app = FuelGaugeApp(interval=3600)
         async with app.run_test(size=(width, 30)) as pilot:
             await pilot.pause()
-            lines = [b.render().plain for b in app.query(GaugeBar)]
+            bars = list(app.query(GaugeBar))
+            lines = [b.render().plain for b in bars]
             starts = {line.index("%") for line in lines}
             assert len(starts) == 1, (
                 f"percent column jagged at width {width}: {lines}"
             )
-            arrows = {
-                re.search(r"[↑↓·✗◦]", line).start()
-                for line in lines
-                if re.search(r"[↑↓·✗◦]", line)
+            # The pace column holds arrows and words alike, so anchor on where
+            # each row's own pace text lands rather than on a glyph.
+            pace_starts = {
+                line.rindex(display)
+                for bar, line in zip(bars, lines)
+                if (display := bar.gauge.pace().display) and display in line
             }
-            assert len(arrows) <= 1, (
-                f"arrow column jagged at width {width}: {lines}"
+            assert len(pace_starts) <= 1, (
+                f"pace column jagged at width {width}: {lines}"
             )
 
     async def test_legend_grows_instead_of_truncating(self, stub):

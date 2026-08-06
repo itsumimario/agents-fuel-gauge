@@ -91,8 +91,17 @@ class TestPretty:
         """Same rule as the TUI: no glyph without a key on the same screen."""
         out = render_pretty(demo_snapshots(), color=False)
         legend = out.rsplit("\n\n", 1)[-1]
-        for arrow in ("↓", "↑", "·", "✗", "◦"):
+        for arrow in ("↓", "↑", "✗"):
             assert arrow in legend
+
+    def test_states_without_a_direction_are_words_needing_no_key(self):
+        out = render_pretty(demo_snapshots(), color=False)
+        assert "on pace" in out
+        # Only the gauge rows: `·` is also the subtitle separator.
+        rows = [line for line in out.splitlines() if "█" in line or "░" in line]
+        assert rows
+        for line in rows:
+            assert "·" not in line and "◦" not in line, line
 
     def test_rows_carry_the_magnitude_not_just_the_direction(self):
         """"Slow down" without "by how much" is half an instruction."""
