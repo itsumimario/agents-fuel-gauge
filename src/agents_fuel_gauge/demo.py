@@ -56,7 +56,9 @@ def demo_snapshots() -> list[ProviderSnapshot]:
     codex = ProviderSnapshot(
         key="codex",
         display_name="Codex",
-        plan="Pro",
+        # The mapped product name, not the raw `pro` the API answers with —
+        # the screenshot should show what a real panel shows.
+        plan="Pro 20x",
         account="d•••@e•••.com",
         captured_at=now - timedelta(minutes=4),
         gauges=[

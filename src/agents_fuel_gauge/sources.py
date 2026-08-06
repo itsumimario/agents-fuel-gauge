@@ -202,6 +202,45 @@ def _plan_from_tier(tier: str | None) -> str | None:
     return " ".join(p if p[0].isdigit() else p.capitalize() for p in parts)
 
 
+# Codex reports a plan *family*, not the name on the pricing page, and the two
+# genuinely differ: OpenAI sells ChatGPT Pro 5x and Pro 20x as separate
+# products, but the usage endpoint answers `prolite` and `pro`. Showing the raw
+# value capitalised gave every Pro subscriber a bare "Pro" next to Claude's
+# "Max 20x", which reads as the tool failing to look hard enough.
+#
+# `pro` -> "Pro 20x" is confirmed against a live Pro 20x subscription. The rest
+# come from Codex's own `codex_protocol::account::PlanType` enum — free, plus,
+# team, go, pro, prolite, free_workspace, self_serve_business_usage_based,
+# ent26, enterprise_cbp_usage_based, enterprise, hc, edu, education — where
+# `prolite` is the only other Pro-family value and Pro 5x the only other Pro
+# product, so that is the pairing. Anything unrecognised falls through to a
+# tidied version of whatever the API said, so a plan invented next quarter
+# renders sensibly instead of being mislabelled as one we do know.
+_CODEX_PLAN_NAMES = {
+    "free": "Free",
+    "go": "Go",
+    "plus": "Plus",
+    "prolite": "Pro 5x",
+    "pro": "Pro 20x",
+    "team": "Team",
+    "free_workspace": "Business",
+    "self_serve_business_usage_based": "Business",
+    "enterprise": "Enterprise",
+    "enterprise_cbp_usage_based": "Enterprise",
+    "ent26": "Enterprise",
+    "edu": "Edu",
+    "education": "Edu",
+}
+
+
+def _codex_plan_name(plan_type: object) -> str | None:
+    """`pro` -> `Pro 20x`, `prolite` -> `Pro 5x`, `plus` -> `Plus`."""
+    if not isinstance(plan_type, str) or not plan_type.strip():
+        return None
+    key = plan_type.strip().lower()
+    return _CODEX_PLAN_NAMES.get(key) or key.replace("_", " ").title()
+
+
 def _raise_for_status(response: httpx.Response, provider: str) -> dict:
     if response.status_code == 401:
         cli = "claude" if provider == "claude" else "codex"
@@ -401,8 +440,7 @@ async def fetch_codex(
         if age:
             snapshot.stale = True
             snapshot.captured_at = datetime.now(timezone.utc) - timedelta(seconds=age)
-        plan = usage.get("plan_type")
-        snapshot.plan = plan.capitalize() if isinstance(plan, str) else None
+        snapshot.plan = _codex_plan_name(usage.get("plan_type"))
         snapshot.account = mask_email(usage.get("email"))
     except SourceError as exc:
         snapshot.error = str(exc)

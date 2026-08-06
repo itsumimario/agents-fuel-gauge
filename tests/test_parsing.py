@@ -21,6 +21,7 @@ from agents_fuel_gauge.sources import (
     SourceError,
     _claude_gauges,
     _codex_gauges,
+    _codex_plan_name,
     _duration_label,
     _plan_from_tier,
     _read_json,
@@ -256,6 +257,42 @@ class TestHelpers:
         assert _plan_from_tier("default_claude_max_20x") == "Max 20x"
         assert _plan_from_tier("default_claude_pro") == "Pro"
         assert _plan_from_tier(None) is None
+
+
+class TestCodexPlanNames:
+    """Codex answers with a plan family; the product has a longer name.
+
+    `pro` and `prolite` are two different subscriptions — ChatGPT Pro 20x and
+    Pro 5x — and rendering both as "Pro" loses the distinction the user is
+    paying for.
+    """
+
+    def test_the_two_pro_tiers_are_distinguished(self):
+        assert _codex_plan_name("pro") == "Pro 20x"
+        assert _codex_plan_name("prolite") == "Pro 5x"
+
+    def test_simple_families_keep_their_name(self):
+        assert _codex_plan_name("plus") == "Plus"
+        assert _codex_plan_name("go") == "Go"
+        assert _codex_plan_name("team") == "Team"
+
+    def test_the_several_enterprise_spellings_all_land_on_one_name(self):
+        for raw in ("enterprise", "ent26", "enterprise_cbp_usage_based"):
+            assert _codex_plan_name(raw) == "Enterprise"
+
+    def test_unknown_plans_are_tidied_not_dropped_or_mislabelled(self):
+        """A plan invented next quarter must not be renamed to one we know."""
+        assert _codex_plan_name("pro_50x") == "Pro 50X"
+        assert _codex_plan_name("some_new_thing") == "Some New Thing"
+
+    def test_missing_or_malformed_yields_nothing(self):
+        assert _codex_plan_name(None) is None
+        assert _codex_plan_name("") is None
+        assert _codex_plan_name("   ") is None
+        assert _codex_plan_name(7) is None
+
+    def test_case_and_padding_are_ignored(self):
+        assert _codex_plan_name("  PRO  ") == "Pro 20x"
 
     def test_countdown_granularity(self):
         assert format_countdown(2 * 86400 + 5 * 3600) == "2d 05h"

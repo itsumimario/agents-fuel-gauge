@@ -332,10 +332,11 @@ screenshots stay shareable.
   doesn't, so no Codex bar claims to be the binding one.
 - **Codex identifies windows by duration, not name.** On plans with no 5-hour
   throttle, no 5h bar is drawn because the API doesn't return one.
-- **Codex plan names are less specific than Claude's**, and that's upstream.
-  The usage endpoint returns a bare plan family (`pro`, `plus`) with no
-  multiplier variants, so the panel reads `Pro` where Claude reads `Max 20x`.
-  That is the whole name of the plan, not a truncation of one.
+- **Codex reports a plan family, not a product name.** `pro` and `prolite` are
+  ChatGPT **Pro 20x** and **Pro 5x** — two different subscriptions at two
+  different prices — so the raw value is mapped back to the name you actually
+  pay for. Anything unrecognised is tidied and shown as-is rather than guessed
+  into a plan we know.
 - **Not every model gets its own bar** — only those with a dedicated sub-cap.
   The rest draw from the shared pool.
 
