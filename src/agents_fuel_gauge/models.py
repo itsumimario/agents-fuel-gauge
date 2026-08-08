@@ -15,6 +15,12 @@ from datetime import datetime, timezone
 WARNING_AT = 60.0
 CRITICAL_AT = 85.0
 
+# The scope a gauge carries when it covers everything you run, as opposed to a
+# per-model sub-cap. Which side of that line a meter sits on decides what it can
+# constrain: an unscoped meter governs all work, a scoped one governs only work
+# in its scope. See `governing_indexes`.
+ALL_MODELS = "all models"
+
 SEVERITIES = ("normal", "warning", "critical")
 
 # How far the projected finish may drift from budget before it is worth acting
@@ -148,10 +154,68 @@ def mask_email(email: str | None) -> str | None:
     return f"{local[0]}•••@{head[0]}•••.{rest}"
 
 
+def governing_indexes(
+    snapshot: "ProviderSnapshot", now: datetime | None = None
+) -> set[int]:
+    """Which of a provider's meters actually constrain you.
+
+    Meters are not independent, and treating them as if they were produced
+    advice that was worse than useless. One request spends from *every* meter
+    at once, so a 5-hour window with plenty of headroom cannot license spending
+    that a nearly-empty weekly window forbids — yet per-meter advice cheerfully
+    said "speed up by 150%" on the 5h row while the 7d row said "slow down by
+    93%". Following the first would blow the second.
+
+    The fix rests on one fact about `rate_adjustment`: unlike a percentage, it
+    is comparable across meters. Percentages are fractions of different budgets
+    — 1% of a 5-hour allowance is not 1% of a week's — but every adjustment is a
+    multiplier on the *same* underlying quantity, your request throughput.
+    Multiply throughput by k and every meter's consumption rate scales by k. So
+    the largest multiplier you can apply without overrunning anything is simply
+    the smallest adjustment among the meters that cover the work.
+
+    Scope decides which meters cover which work:
+
+      * unscoped meters (`all models`) constrain everything;
+      * a scoped meter constrains only its own model, so its pool is the
+        unscoped meters plus itself.
+
+    A meter governs when it holds the minimum for some pool. In practice that
+    is one unscoped meter — the tightest — plus any scoped meter tighter still.
+    Everything else is slack, and slack is not an instruction.
+
+    Meters too new to judge are excluded: they have no rate to compare. If that
+    leaves nothing to compare at all, every meter with a reading speaks for
+    itself rather than the panel falling silent.
+    """
+    readings: list[tuple[int, Gauge, Pace]] = []
+    for index, gauge in enumerate(snapshot.gauges):
+        pace = gauge.pace(now)
+        if pace is not None:
+            readings.append((index, gauge, pace))
+
+    judged = [r for r in readings if r[2].actionable]
+    if not judged:
+        # Nothing can be ranked, so nothing is suppressed.
+        return {index for index, _, _ in readings}
+
+    def tightest(pool):
+        return min(pool, key=lambda r: r[2].rate_adjustment)[0]
+
+    general = [r for r in judged if not r[1].scoped]
+    governors: set[int] = set()
+    if general:
+        governors.add(tightest(general))
+    for reading in judged:
+        if reading[1].scoped:
+            governors.add(tightest(general + [reading]))
+    return governors
+
+
 def directives(
     snapshots: list["ProviderSnapshot"], now: datetime | None = None
 ) -> list[dict]:
-    """One instruction per meter — never one instruction for all of them.
+    """One entry per meter, each flagged with whether it actually governs.
 
     An earlier version ranked every gauge together and emitted a single
     "runs out first" winner with one rate multiplier. That was wrong twice
@@ -161,14 +225,41 @@ def directives(
     burning steadily right now. And a lone multiplier reads as advice about
     everything you are running, when it only ever described one window.
 
-    Each entry here names its own meter and applies only to that meter.
+    So every entry still names its own meter. But a meter's reading and a
+    meter's *instruction* are different things: readings are independent,
+    instructions are not, because one request spends from every meter at once.
+    `governs` marks the entries whose advice can be acted on directly, and
+    `effectiveRateAdjustment` gives every entry the multiplier that actually
+    applies to its work once the other meters get a vote. A subscriber that
+    scales its rate should use the effective figure, or filter to `governs`.
+    See `governing_indexes`.
     """
     out: list[dict] = []
     for snapshot in snapshots:
-        for gauge in snapshot.gauges:
+        governors = governing_indexes(snapshot, now)
+        # The multiplier that survives every meter covering this one's work.
+        paces = [(g, g.pace(now)) for g in snapshot.gauges]
+        judged = [(g, p) for g, p in paces if p is not None and p.actionable]
+        general = [p.rate_adjustment for g, p in judged if not g.scoped]
+
+        for index, gauge in enumerate(snapshot.gauges):
             pace = gauge.pace(now)
             if pace is None:
                 continue
+            pool = list(general)
+            if pace.actionable:
+                pool.append(pace.rate_adjustment)
+            effective = min(pool) if pool else pace.rate_adjustment
+            held_by = None
+            if index not in governors:
+                held_by = next(
+                    (
+                        g.label
+                        for i, g in enumerate(snapshot.gauges)
+                        if i in governors and not g.scoped
+                    ),
+                    None,
+                )
             out.append(
                 {
                     "provider": snapshot.key,
@@ -177,6 +268,12 @@ def directives(
                     "window": gauge.window,
                     "percent": gauge.percent,
                     "severity": gauge.severity,
+                    # True when this meter holds the tightest constraint on the
+                    # work it covers. False means its own advice is slack that
+                    # another meter overrules.
+                    "governs": index in governors,
+                    "heldBy": held_by,
+                    "effectiveRateAdjustment": round(effective, 3),
                     "verdict": pace.verdict,
                     "actionable": pace.actionable,
                     "direction": pace.direction,
@@ -374,6 +471,17 @@ class Gauge:
     @property
     def label(self) -> str:
         return f"{self.window} {self.scope}"
+
+    @property
+    def scoped(self) -> bool:
+        """True for a per-model sub-cap, false for a meter covering everything.
+
+        The distinction is what makes cross-meter reasoning possible: an
+        unscoped meter constrains every request, a scoped one constrains only
+        requests to that model. A weekly Fable cap at 96% says nothing about
+        whether you can keep using Sonnet.
+        """
+        return self.scope != ALL_MODELS
 
     def seconds_remaining(self, now: datetime | None = None) -> int | None:
         if self.resets_at is None:

@@ -26,6 +26,7 @@ from .models import (
     format_countdown,
     format_remaining,
     format_reset_at,
+    governing_indexes,
 )
 from .sources import fetch_all
 
@@ -59,6 +60,10 @@ LEGEND_NOTE = (
     "the % is how far to change that meter's average rate so far, "
     "so it lasts until it resets"
 )
+LEGEND_GOVERNS = (
+    "advice sits on the tightest meter only — one request spends from "
+    "all of them, so the others' slack is not yours to spend"
+)
 
 
 def _legend(color: bool) -> str:
@@ -68,7 +73,8 @@ def _legend(color: bool) -> str:
         off = RESET if color and tint else ""
         parts.append(f"{tint}{PACE_ARROW[verdict]}{off} {meaning}")
     key = "   ".join(parts)
-    return f"{key}\n{DIM if color else ''}{LEGEND_NOTE}{RESET if color else ''}"
+    dim, off = (DIM, RESET) if color else ("", "")
+    return f"{key}\n{dim}{LEGEND_NOTE}{off}\n{dim}{LEGEND_GOVERNS}{off}"
 
 
 def build_payload(snapshots: list[ProviderSnapshot], at: str) -> dict:
@@ -114,10 +120,16 @@ def render_plain(snapshots: list[ProviderSnapshot]) -> str:
     for snap in snapshots:
         if snap.error:
             rows.append(("error", (snap.key, snap.error)))
-        for gauge in snap.gauges:
+        governors = governing_indexes(snap)
+        for index, gauge in enumerate(snap.gauges):
             flags = []
             if gauge.active_limit:
                 flags.append("ACTIVE")
+            # Columns 7 and 10 stay this meter's own reading, because that is
+            # what they have always meant. GOVERNS is how a script tells a
+            # reading it can act on from one another meter overrules.
+            if index in governors:
+                flags.append("GOVERNS")
             if snap.stale:
                 flags.append("STALE")
             pace = gauge.pace()
@@ -193,11 +205,13 @@ def render_pretty(snapshots: list[ProviderSnapshot], color: bool) -> str:
             lines.append("  no quota windows reported")
             continue
 
-        for gauge in snap.gauges:
+        governors = governing_indexes(snap)
+        for index, gauge in enumerate(snap.gauges):
             filled = min(BAR_WIDTH, round(gauge.percent / 100 * BAR_WIDTH))
             bar = "█" * filled + "░" * (BAR_WIDTH - filled)
             tint, off = (ANSI.get(gauge.severity, ""), RESET) if color else ("", "")
-            pace = gauge.pace()
+            # Same rule as the TUI: only the meter that constrains you speaks.
+            pace = gauge.pace() if index in governors else None
             if pace:
                 arrow_tint = PACE_ANSI.get(pace.verdict, "") if color else ""
                 arrow_off = RESET if color and arrow_tint else ""
@@ -207,9 +221,11 @@ def render_pretty(snapshots: list[ProviderSnapshot], color: bool) -> str:
             resets = format_reset_at(gauge.resets_at, "full")
             left = format_remaining(gauge.seconds_remaining())
             lines.append(
-                f"  {gauge.label:<24}{tint}{bar}{off} "
-                f"{tint}{gauge.percent:>3.0f}%{off}  "
-                f"resets {resets}  ({left:>7})  {note}"
+                (
+                    f"  {gauge.label:<24}{tint}{bar}{off} "
+                    f"{tint}{gauge.percent:>3.0f}%{off}  "
+                    f"resets {resets}  ({left:>7})  {note}"
+                ).rstrip()  # a quiet meter leaves no trailing gap
             )
     if not lines:
         return "no usage data\n"

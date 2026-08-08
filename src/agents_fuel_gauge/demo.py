@@ -30,23 +30,26 @@ def demo_snapshots() -> list[ProviderSnapshot]:
         account="d•••@e•••.com",
         captured_at=now,
         gauges=[
-            # ~57% through a 5h window with 34% spent: comfortably under budget.
+            # 80% through a 5h window with 18% spent: acres of burst headroom,
+            # and none of it spendable, because the week below is overdrawn.
+            # This row exists to show what the panel does *not* say.
             Gauge(
-                "5h", "all models", 34.0,
-                now + timedelta(hours=2, minutes=11),
+                "5h", "all models", 18.0,
+                now + timedelta(hours=1, minutes=2),
                 window_seconds=FIVE_HOURS,
             ),
-            # ~89% through the week with 68% spent: still fine.
+            # 88% spent with two days still to run: genuinely over budget, and
+            # the meter that governs everything.
             Gauge(
-                "7d", "all models", 68.0,
-                now + timedelta(hours=18, minutes=8),
-                severity="warning", window_seconds=ONE_WEEK,
+                "7d", "all models", 88.0,
+                now + timedelta(days=2, minutes=8),
+                severity="critical", window_seconds=ONE_WEEK,
             ),
-            # 91% spent with 89% of the week gone — the interesting case: a
-            # frightening percentage that is actually on budget.
+            # A per-model cap tighter still, so it governs Fable work on top of
+            # the general limit — two instructions, each true of its own scope.
             Gauge(
                 "7d", "Fable", 91.0,
-                now + timedelta(hours=18, minutes=8),
+                now + timedelta(days=2, minutes=8),
                 severity="critical", active_limit=True,
                 window_seconds=ONE_WEEK,
             ),
@@ -62,13 +65,16 @@ def demo_snapshots() -> list[ProviderSnapshot]:
         account="d•••@e•••.com",
         captured_at=now - timedelta(minutes=4),
         gauges=[
-            # 82% spent with 5 days still to run: genuinely over budget.
+            # 62% spent with a day left: room to go faster, and nothing else
+            # here to forbid it, so this one does get to say so.
             Gauge(
-                "7d", "all models", 82.0,
-                now + timedelta(days=5, hours=2),
+                "7d", "all models", 62.0,
+                now + timedelta(days=1, hours=3),
                 severity="warning",
                 window_seconds=ONE_WEEK,
             ),
+            # A scoped cap whose window has barely opened: no rate to estimate,
+            # so it cannot govern anything and stays quiet.
             Gauge(
                 "7d", "GPT-5.3-Codex-Spark", 12.0,
                 now + timedelta(days=6, hours=22),

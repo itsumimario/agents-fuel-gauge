@@ -108,6 +108,21 @@ because a glyph you have to look up is a question, not information — and the
 `·` and `◦` this replaced were a pixel apart while meaning opposite things
 about whether the reading could be trusted.
 
+**Only the tightest meter carries advice.** Meters aren't independent: one
+request spends from all of them at once, so a 5-hour window with headroom to
+spare cannot license spending that a nearly-empty weekly window forbids.
+
+```
+5h all models  ████░░  18%  Sat Aug  8 14:51   1h 01m
+7d all models  █████░  88%  Mon Aug 10 13:57    2d 0h  ↓ by 66%
+7d Fable       █████░  91%  Mon Aug 10 13:57    2d 0h  ↓ by 75%
+```
+
+The 5-hour meter has plenty left and says nothing, because none of it is
+yours to spend. Scope decides what a meter can constrain: `all models` governs
+everything, while a per-model cap like Fable governs only that model — which is
+why it can add a second, tighter instruction without throttling anything else.
+
 The percentage is the *change*, so `↓ by 92%` and "throttle to 8%" are the same
 instruction — the first is just readable at a glance. It's measured against
 each meter's **average rate so far**, since one reading is all a snapshot gives
@@ -136,11 +151,11 @@ blanks a panel — the last known numbers stay up behind a warning.
 
 ```console
 $ afg --check
-claude  5h  all-models           34%  2h10m   -       spare_capacity  2026-08-06T10:31  2h10m   +150%
-claude  7d  all-models           68%  18h07m  -       spare_capacity  2026-08-07T02:28  18h07m  +289%
-claude  7d  Fable                91%  18h07m  ACTIVE  on_track        2026-08-07T02:28  18h07m  -
-codex   7d  all-models           82%  5d01h   -       slow_down       2026-08-11T10:20  5d1h    -92%
-codex   7d  GPT-5.3-Codex-Spark  12%  6d21h   -       too_early       2026-08-13T06:20  6d21h   -
+claude  5h  all-models           18%  1h01m  -               spare_capacity  2026-08-08T14:52  1h01m  +900%
+claude  7d  all-models           88%  2d00h  GOVERNS         slow_down       2026-08-10T13:58  2d0h   -66%
+claude  7d  Fable                91%  2d00h  ACTIVE,GOVERNS  slow_down       2026-08-10T13:58  2d0h   -75%
+codex   7d  all-models           62%  1d02h  GOVERNS         spare_capacity  2026-08-09T16:50  1d2h   +220%
+codex   7d  GPT-5.3-Codex-Spark  12%  6d21h  -               too_early       2026-08-15T11:50  6d21h  -
 ```
 
 | | Column | |
@@ -150,19 +165,23 @@ codex   7d  GPT-5.3-Codex-Spark  12%  6d21h   -       too_early       2026-08-13
 | `$3` | scope | `all-models` or a model name |
 | `$4` | used | percent |
 | `$5` | resets in | countdown, to the second in the last hour |
-| `$6` | flags | `ACTIVE` — the provider says this limit is the one in force. `STALE` — carried over from an earlier poll |
-| `$7` | pace verdict | |
+| `$6` | flags | `GOVERNS` — this meter is the tightest constraint on the work it covers, so its advice is actionable. `ACTIVE` — the provider says this limit is the one in force. `STALE` — carried over from an earlier poll |
+| `$7` | pace verdict | this meter's own reading |
 | `$8` | resets at | local time, ISO-ish |
 | `$9` | remaining | `18h07m` inside a day, `5d1h` past one |
 | `$10` | change | signed: `-92%` means slow down by 92% |
+
+Columns 7 and 10 are always the meter's *own* reading, which is why the 5-hour
+row above still shows `+900%` — true of that meter alone, and not something you
+can act on. `GOVERNS` is how a script tells the two apart.
 
 Every field is a single whitespace-free token, so awk columns mean what you'd
 expect:
 
 ```sh
-afg --check | awk '$4+0 > 80'           # anything over 80% used
-afg --check | awk '$6 ~ /ACTIVE/'       # only the limit currently in force
-afg --check | awk '$10+0 < -50'         # only what needs real throttling
+afg --check | awk '$4+0 > 80'                       # anything over 80% used
+afg --check | awk '$6 ~ /GOVERNS/'                  # only what constrains you
+afg --check | awk '$6 ~ /GOVERNS/ && $10+0 < -50'   # only real throttling
 ```
 
 Note the difference between columns 4 and 7 in that output: Fable at **91%** is
@@ -214,13 +233,22 @@ from.
 
 | Field | Meaning |
 | ----- | ------- |
-| `provider`, `label` | which meter this applies to — **only** that meter |
-| `verdict` | `slow_down` / `on_track` / `spare_capacity` / `exhausted` / `too_early` |
+| `provider`, `label` | which meter this applies to |
+| `governs` | **`true` when this meter is the tightest constraint on the work it covers.** A subscriber steering its own rate should filter on this, or use `effectiveRateAdjustment` |
+| `effectiveRateAdjustment` | the multiplier that actually applies once every meter covering this work gets a vote — never larger than `rateAdjustment` |
+| `heldBy` | the meter overruling this one, when `governs` is false |
+| `verdict` | `slow_down` / `on_track` / `spare_capacity` / `exhausted` / `too_early` — this meter's own reading |
 | `direction` | `down` / `up` / `hold` — the arrow, as a value |
 | `changePercent` | signed change to make, or `null` when no change is called for. `-92.2` = ease off by 92% |
 | `rateAdjustment` | the same instruction as a multiplier, for code that scales a rate directly. `0.078` = throttle to 7.8% |
 | `actionable` | `false` when the window is too new to judge |
 | `projectedUsagePercent` | where you land at reset if nothing changes. Over 100 means you run out early |
+
+**Use `effectiveRateAdjustment`, not `rateAdjustment`,** unless you have a
+reason not to. The per-meter figure describes that meter in isolation, and
+meters aren't isolated: a 5-hour window reporting `2.5` while the week reports
+`0.34` means you may go at `0.34`, not `2.5`. Only the effective figure has
+already reconciled them.
 
 **There is deliberately no single combined instruction.** An earlier version
 ranked every meter together and emitted one winner with one multiplier. That
@@ -241,7 +269,7 @@ Each gauge under `providers[].gauges[]` carries `window`, `scope`, `label`,
 `windowSeconds`, and its own `pace` object.
 
 ```sh
-afg --json | jq -r '.directives[] | select(.direction == "down")
+afg --json | jq -r '.directives[] | select(.governs and .direction == "down")
                     | "\(.provider) \(.label): \(.changePercent)%"'
 afg --json | jq -r '.providers[].gauges[] | select(.activeLimit)
                     | "\(.label) \(.percent)%"'
@@ -254,8 +282,8 @@ flushed immediately — so anything that can read a pipe can subscribe:
 
 ```sh
 afg --watch --json -i 60 | while read -r line; do
-  jq -r '.directives[] | select(.verdict == "slow_down")
-         | "throttle \(.provider)/\(.label) to \(.rateAdjustment)x"' <<<"$line"
+  jq -r '.directives[] | select(.governs and .verdict == "slow_down")
+         | "throttle \(.provider)/\(.label) to \(.effectiveRateAdjustment)x"' <<<"$line"
 done
 ```
 

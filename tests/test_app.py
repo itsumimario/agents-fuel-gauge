@@ -7,7 +7,26 @@ import pytest
 
 from agents_fuel_gauge import app as app_module
 from agents_fuel_gauge.app import FuelGaugeApp, GaugeBar, Legend, ProviderPanel
-from agents_fuel_gauge.models import PACE_ARROW, Gauge, ProviderSnapshot
+from agents_fuel_gauge.models import (
+    PACE_ARROW,
+    Gauge,
+    ProviderSnapshot,
+    governing_indexes,
+)
+
+
+def governing_bars(app) -> list[GaugeBar]:
+    """The rows that carry advice — the tightest meter in each pool.
+
+    Meters share a budget, so only the tightest has anything actionable to say.
+    Assertions about advice must be scoped to those rows; the rest are gauges.
+    """
+    out = []
+    for panel in app.query(ProviderPanel):
+        bars = [w for w in panel.children if isinstance(w, GaugeBar)]
+        governors = governing_indexes(panel.snapshot)
+        out += [b for i, b in enumerate(bars) if i in governors]
+    return out
 
 NOW = datetime.now(timezone.utc)
 FIVE_HOURS = 5 * 3_600
@@ -108,13 +127,6 @@ async def test_no_undocumented_symbols_on_a_row(stub):
 class TestPaceArrow:
     """The arrow is an instruction, not a status report."""
 
-    async def _row(self, stub, scope):
-        app = FuelGaugeApp(interval=3600)
-        async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause()
-            bar = next(b for b in app.query(GaugeBar) if b.gauge.scope == scope)
-            return bar.render().plain
-
     async def test_a_meter_burning_too_fast_is_told_to_slow_down(self, stub):
         app = FuelGaugeApp(interval=3600)
         async with app.run_test(size=(100, 30)) as pilot:
@@ -128,11 +140,63 @@ class TestPaceArrow:
             assert "↓" in line, f"over-budget meter must point down: {line!r}"
             assert re.search(r"by \d+%", line), f"no magnitude in {line!r}"
 
-    async def test_a_meter_with_headroom_is_told_it_can_speed_up(self, stub):
-        """5% of a 5h window with four fifths of it gone: plenty of room."""
-        line = await self._row(stub, "all models")
-        assert "↑" in line, f"under-budget meter must point up: {line!r}"
-        assert re.search(r"by \d+%", line), f"no magnitude in {line!r}"
+    async def test_the_governing_meter_carries_a_sized_instruction(self, stub):
+        app = FuelGaugeApp(interval=3600)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            bars = governing_bars(app)
+            assert bars, "something must govern"
+            for bar in bars:
+                line = bar.render().plain
+                pace = bar.gauge.pace()
+                assert pace.display in line, f"{pace.display!r} missing: {line!r}"
+
+
+class TestOnlyTheTightestMeterSpeaks:
+    """The reported bug, at the level the user sees it.
+
+    A 5h window with headroom sitting beside a nearly-spent weekly window used
+    to print "↑ by 150%" — an invitation to blow the weekly cap. Rows that do
+    not constrain you now say nothing at all in that column.
+    """
+
+    async def test_non_governing_rows_carry_no_advice(self, stub):
+        app = FuelGaugeApp(interval=3600)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            governing = set(map(id, governing_bars(app)))
+            quiet = [b for b in app.query(GaugeBar) if id(b) not in governing]
+            assert quiet, "fixture should include a meter that is not the constraint"
+            for bar in quiet:
+                line = bar.render().plain
+                assert not re.search(r"[↑↓✗]|by \d+%|on pace|too new", line), (
+                    f"slack meter should stay quiet: {line!r}"
+                )
+
+    async def test_a_spent_week_silences_an_idle_five_hour_window(self, monkeypatch):
+        """The exact shape reported: plenty of burst room, no weekly budget."""
+        now = datetime.now(timezone.utc)
+
+        async def fake_fetch_all():
+            return [
+                ProviderSnapshot(
+                    key="claude", display_name="Claude", captured_at=now,
+                    gauges=[
+                        Gauge("5h", "all models", 10.0, now + timedelta(hours=1),
+                              window_seconds=FIVE_HOURS),
+                        Gauge("7d", "all models", 96.0, now + timedelta(days=3),
+                              severity="critical", window_seconds=ONE_WEEK),
+                    ],
+                )
+            ]
+
+        monkeypatch.setattr(app_module, "fetch_all", fake_fetch_all)
+        app = FuelGaugeApp(interval=3600)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            burst, week = [b.render().plain for b in app.query(GaugeBar)]
+            assert "↑" not in burst, f"5h must not offer its headroom: {burst!r}"
+            assert "↓" in week, f"the week must be the one talking: {week!r}"
 
 
 async def test_each_panel_reports_its_own_age(stub):
@@ -319,7 +383,7 @@ class TestNarrowTerminal:
         app = FuelGaugeApp(interval=3600)
         async with app.run_test(size=(width, 30)) as pilot:
             await pilot.pause()
-            for bar in app.query(GaugeBar):
+            for bar in governing_bars(app):
                 line = bar.render().plain
                 if not bar.gauge.pace().arrow:
                     continue  # no direction to point; nothing to preserve
@@ -333,7 +397,7 @@ class TestNarrowTerminal:
         app = FuelGaugeApp(interval=3600)
         async with app.run_test(size=(width, 30)) as pilot:
             await pilot.pause()
-            for bar in app.query(GaugeBar):
+            for bar in governing_bars(app):
                 line = bar.render().plain
                 if bar.gauge.pace().change_percent is None:
                     continue  # nothing to size: on pace, spent, or too new

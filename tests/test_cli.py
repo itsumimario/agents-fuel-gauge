@@ -6,12 +6,13 @@ through awk), so its shape is pinned here rather than left to drift.
 
 import json
 import re
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from agents_fuel_gauge.cli import main, render_plain, render_pretty
 from agents_fuel_gauge.demo import demo_snapshots
-from agents_fuel_gauge.models import ProviderSnapshot
+from agents_fuel_gauge.models import Gauge, ProviderSnapshot
 
 
 class TestPlain:
@@ -30,7 +31,10 @@ class TestPlain:
             assert cells[0] in {"claude", "codex"}      # $1 provider
             assert cells[1].endswith(("h", "d"))         # $2 window
             assert cells[3].endswith("%")                # $4 used
-            assert cells[5] in {"-", "ACTIVE", "STALE", "ACTIVE,STALE"}  # $6 flags
+            # $6 flags: a comma-joined set, so new flags never shift a column.
+            assert set(cells[5].split(",")) <= {
+                "-", "ACTIVE", "GOVERNS", "STALE",
+            }, cells[5]
             assert cells[6] in {                          # $7 pace verdict
                 "-", "slow_down", "on_track", "spare_capacity",
                 "exhausted", "too_early",
@@ -95,7 +99,16 @@ class TestPretty:
             assert arrow in legend
 
     def test_states_without_a_direction_are_words_needing_no_key(self):
-        out = render_pretty(demo_snapshots(), color=False)
+        """A lone meter governs by default, so its wording is what shows."""
+        now = datetime.now(timezone.utc)
+        snap = ProviderSnapshot(
+            key="claude", display_name="Claude", captured_at=now,
+            gauges=[
+                Gauge("7d", "all models", 50.0, now + timedelta(days=3, hours=12),
+                      window_seconds=7 * 86_400),
+            ],
+        )
+        out = render_pretty([snap], color=False)
         assert "on pace" in out
         # Only the gauge rows: `·` is also the subtitle separator.
         rows = [line for line in out.splitlines() if "█" in line or "░" in line]
@@ -202,6 +215,52 @@ class TestDirectives:
         for row in self._rows(capsys):
             assert row["resetsAt"]
             assert row["secondsRemaining"] > 0
+
+    def test_each_says_whether_it_actually_governs(self, capsys):
+        rows = self._rows(capsys)
+        assert any(r["governs"] for r in rows)
+        assert any(not r["governs"] for r in rows), (
+            "demo should include a meter whose slack another meter overrules"
+        )
+
+    def test_the_effective_multiplier_never_exceeds_the_meters_own(self, capsys):
+        """A subscriber scaling on this must not be told it can go faster.
+
+        Only meaningful for meters with a real reading: `too_early` reports
+        `rateAdjustment: 1.0` as a deliberate no-opinion placeholder, and the
+        effective figure rightly comes from the meters that do have one.
+        """
+        for row in self._rows(capsys):
+            if row["verdict"] == "too_early":
+                continue
+            assert row["effectiveRateAdjustment"] <= row["rateAdjustment"] + 1e-9
+
+    def test_an_unjudgeable_meter_still_reports_the_real_constraint(self, capsys):
+        """Its own 1.0 means "no opinion", not "carry on at this rate"."""
+        for row in self._rows(capsys):
+            if row["verdict"] == "too_early":
+                assert row["rateAdjustment"] == 1.0
+                assert row["effectiveRateAdjustment"] != 1.0
+
+    def test_a_non_governing_meter_reports_what_holds_it(self, capsys):
+        """Otherwise "governs: false" is a dead end for the consumer."""
+        for row in self._rows(capsys):
+            if not row["governs"] and row["verdict"] != "too_early":
+                assert row["heldBy"], row
+
+    def test_effective_matches_the_governing_meter(self, capsys):
+        """The whole point: one number per provider that respects every meter."""
+        rows = self._rows(capsys)
+        for provider in {r["provider"] for r in rows}:
+            group = [r for r in rows if r["provider"] == provider]
+            unscoped = [r for r in group if r["scope"] == "all models"]
+            if not unscoped:
+                continue
+            tightest = min(r["rateAdjustment"] for r in unscoped)
+            for row in unscoped:
+                assert row["effectiveRateAdjustment"] == pytest.approx(
+                    tightest, abs=1e-3
+                )
 
     def test_no_single_combined_instruction(self, capsys):
         """One multiplier for everything reads as advice about everything."""

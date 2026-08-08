@@ -5,6 +5,10 @@ Screen {
 #panels {
     padding: 0 1;
     height: 1fr;
+    /* A two-column scrollbar is two columns the rows do not get. At ordinary
+       widths that is invisible; at the extreme it is the difference between a
+       countdown reading "59m" and reading "59". */
+    scrollbar-size-vertical: 1;
 }
 
 /* Sits under both panels. `height: auto` lets it wrap to two or three lines on

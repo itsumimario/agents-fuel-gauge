@@ -17,6 +17,7 @@ from .models import (
     format_countdown,
     format_remaining,
     format_reset_at,
+    governing_indexes,
 )
 from .sources import fetch_all
 
@@ -81,6 +82,12 @@ LEGEND_NOTE = (
     "the % is how far to change that meter's average rate so far, "
     "so it lasts until it resets"
 )
+# Why most rows have no advice on them. Without this the blank column reads as
+# missing data rather than as "this meter is not what is stopping you".
+LEGEND_GOVERNS = (
+    "advice sits on the tightest meter only — one request spends from "
+    "all of them, so the others' slack is not yours to spend"
+)
 
 
 def color_of(gauge: Gauge) -> str:
@@ -116,6 +123,13 @@ class GaugeBar(Static):
         # half of one — "slow down" begs "by how much?". The states with no
         # direction print as words instead of a glyph, so nothing in this column
         # has to be looked up (see `Pace.display`).
+        #
+        # A meter only speaks if it is what constrains you. Its neighbours share
+        # the same budget, so their headroom is not spendable and printing it
+        # invited exactly the wrong move: "↑ by 150%" on a 5h row while the 7d
+        # row said "↓ by 93%". See `governing_indexes`.
+        if not self._governs():
+            pace = None
         arrow = pace.arrow if pace else ""
         remaining = gauge.seconds_remaining()
         compact = format_countdown(remaining).replace(" ", "")
@@ -138,6 +152,25 @@ class GaugeBar(Static):
             "compact": (compact, "dim", ">"),
             "coarse": (leading.group(0) if leading else compact, "dim", ">"),
         }
+
+    def _governs(self) -> bool:
+        """Whether this meter is the one constraining the work it covers.
+
+        Computed from the panel rather than stored, so it stays correct as the
+        countdown ticks — which meter is tightest changes over time, not only
+        when new data arrives. A bar rendered outside a panel (tests, one-off
+        measurement) has nothing to be overruled by, so it speaks.
+        """
+        panel = self.parent
+        rows = getattr(panel, "snapshot", None)
+        if rows is None:
+            return True
+        siblings = [w for w in panel.children if isinstance(w, GaugeBar)]
+        try:
+            index = siblings.index(self)
+        except ValueError:
+            return True
+        return index in governing_indexes(panel.snapshot)
 
     def _siblings(self) -> list["GaugeBar"]:
         """Every row that has to line up with this one.
@@ -237,6 +270,7 @@ class GaugeBar(Static):
             text.append(BAR_FULL * filled, style=color_of(self.gauge))
             text.append(BAR_EMPTY * (bar_width - filled), style="bright_black")
         drawn = bool(label_width or bar_width)
+        spent = label_width + (1 + bar_width if bar_width else 0)
         for index, (key, column) in enumerate(zip(keys, cols)):
             value, style, align = mine[key]
             last = index == len(keys) - 1
@@ -245,7 +279,18 @@ class GaugeBar(Static):
             padded = value if (last and align == "<") else (
                 value.rjust(column) if align == ">" else value.ljust(column)
             )
-            text.append((SEP if index or drawn else "") + padded, style=style)
+            segment = (SEP if index or drawn else "") + padded
+            # Hard stop at the widget edge, so "the row fits" is a property of
+            # the assembly rather than of the arithmetic above being right
+            # everywhere. It matters at the extreme: a terminal narrow enough
+            # to leave two columns after the panel border and a scrollbar has
+            # no variant small enough, and something has to give way cleanly.
+            room = width - spent
+            if room <= 0:
+                break
+            segment = segment[:room]
+            text.append(segment, style=style)
+            spent += len(segment)
         return text
 
 
@@ -357,6 +402,8 @@ class Legend(Static):
         # wherever the key happens to run out of terminal.
         text.append("\n")
         text.append(LEGEND_NOTE, style="dim")
+        text.append("\n")
+        text.append(LEGEND_GOVERNS, style="dim")
         return text
 
 

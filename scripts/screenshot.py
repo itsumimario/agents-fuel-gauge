@@ -12,7 +12,7 @@ Two artefacts per theme:
   to. The upstream export links a webfont from a CDN; that is stripped here so
   a committed asset never points at a third party.
 * `.png` — what the README actually embeds. Rasterising removes the last font
-  dependency: block and box-drawing glyphs (█ ░ ╭ ◆) are baked in, so nobody
+  dependency: block, box-drawing and arrow glyphs (█ ░ ╭ ↓ ↑) are baked in, so nobody
   sees tofu because their system monospace lacks coverage.
 """
 
@@ -30,9 +30,11 @@ from agents_fuel_gauge.app import FuelGaugeApp  # noqa: E402
 from agents_fuel_gauge.demo import fetch_demo  # noqa: E402
 
 OUT = REPO / "docs"
-SIZE = (96, 20)
+# Tall enough that the panels never need to scroll: a scrollbar in a still
+# image reads as content the reader is missing rather than as a live control.
+SIZE = (96, 22)
 
-# Verified to cover U+2588 U+2591 U+256D U+25C6 on a stock Linux font set.
+# Verified to cover U+2588 U+2591 U+256D U+2193 U+2191 on a stock Linux font set.
 RASTER_FONT = "DejaVu Sans Mono"
 
 
