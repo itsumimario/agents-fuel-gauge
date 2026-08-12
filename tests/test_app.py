@@ -40,6 +40,26 @@ FIVE_HOURS = 5 * 3_600
 ONE_WEEK = 7 * 86_400
 
 
+def _quantized_samples(regimes, sample_seconds=10 * 60):
+    """Mirror the integer-percent staircase the live providers expose."""
+    total_seconds = sum(days * 86_400 for days, _ in regimes)
+    starts_at = NOW.timestamp() - total_seconds
+    samples = []
+    for elapsed in range(0, int(total_seconds) + 1, sample_seconds):
+        used = 0.0
+        regime_start = 0.0
+        for days, rate in regimes:
+            regime_end = regime_start + days * 86_400
+            used += (
+                max(0.0, min(elapsed, regime_end) - regime_start)
+                * rate
+                / 86_400
+            )
+            regime_start = regime_end
+        samples.append({"t": starts_at + elapsed, "pct": float(int(used))})
+    return samples
+
+
 def _snapshots(fable_percent: float = 91.0, with_scoped: bool = True):
     claude = ProviderSnapshot(
         key="claude",
@@ -152,12 +172,92 @@ async def test_history_key_switches_views_and_mounts_provider_plots(
         assert len(app.query(UsageHistoryPlot)) == 2
         rates = app.query(".history-rate")
         assert len(rates) == 2
-        assert all("required:" in str(line.render()) for line in rates)
+        assert all(
+            "not enough movement" in str(line.render()) for line in rates
+        )
 
         await pilot.press("p")
         await pilot.pause()
         assert plots.display is False
         assert app.query_one("#panels").display is True
+
+
+async def test_history_readout_chains_regimes_and_judges_only_the_latest(
+    monkeypatch,
+):
+    """Old usage is context; only the rate the user can still change gets advice."""
+    samples = _quantized_samples([(2, 20), (4, 6)])
+    snapshot = ProviderSnapshot(
+        key="claude",
+        display_name="Claude",
+        captured_at=NOW,
+        gauges=[
+            Gauge(
+                "9d",
+                "all models",
+                samples[-1]["pct"],
+                NOW + timedelta(days=3),
+                window_seconds=9 * 86_400,
+            )
+        ],
+    )
+
+    async def fake_fetch_all():
+        return [snapshot]
+
+    monkeypatch.setattr(app_module, "fetch_all", fake_fetch_all)
+    monkeypatch.setattr(history, "read_window", lambda *args: samples)
+    app = FuelGaugeApp(interval=3600)
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.pause()
+        await pilot.press("p")
+        await pilot.pause()
+
+        line = app.query_one(".history-rate").render().plain
+        assert re.search(r"20\.\d%/d", line)
+        assert " → " in line
+        assert "6.0%/d" in line
+        assert line.count("↑") == 1
+        assert "↓" not in line
+        assert line.endswith("↑ · required 12.0%/d")
+
+
+async def test_history_readout_leaves_a_steady_on_pace_regime_unmarked(
+    monkeypatch,
+):
+    """A rate inside the pace band needs context but no instruction arrow."""
+    samples = _quantized_samples([(4, 14.3)])
+    snapshot = ProviderSnapshot(
+        key="claude",
+        display_name="Claude",
+        captured_at=NOW,
+        gauges=[
+            Gauge(
+                "7d",
+                "all models",
+                samples[-1]["pct"],
+                NOW + timedelta(days=3),
+                window_seconds=ONE_WEEK,
+            )
+        ],
+    )
+
+    async def fake_fetch_all():
+        return [snapshot]
+
+    monkeypatch.setattr(app_module, "fetch_all", fake_fetch_all)
+    monkeypatch.setattr(history, "read_window", lambda *args: samples)
+    app = FuelGaugeApp(interval=3600)
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.pause()
+        await pilot.press("p")
+        await pilot.pause()
+
+        line = app.query_one(".history-rate").render().plain
+        assert " → " not in line
+        assert re.search(r"14\.\d%/d", line)
+        assert "↑" not in line and "↓" not in line
+        assert line.endswith("· required 14.3%/d")
 
 
 async def test_history_view_explains_that_samples_have_not_accrued(

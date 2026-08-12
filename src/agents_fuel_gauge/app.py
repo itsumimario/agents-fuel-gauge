@@ -14,6 +14,7 @@ from textual_plotext import PlotextPlot
 from . import history
 from .models import (
     PACE_ARROW,
+    PACE_TOLERANCE,
     Gauge,
     ProviderSnapshot,
     format_age,
@@ -111,10 +112,11 @@ def _axis_label(timestamp: float, window_seconds: int) -> str:
     )
 
 
-def _rate_span(seconds: float) -> str:
-    minutes = round(seconds / 60)
-    hours, minutes = divmod(minutes, 60)
-    return f"{hours}h" if not minutes else f"{hours}h {minutes}m"
+def _segment_duration(seconds: float) -> str:
+    """Keep every regime compact while retaining useful duration scale."""
+    if seconds < 86_400:
+        return f"{seconds / 3_600:.1f}h"
+    return f"{seconds / 86_400:.1f}d"
 
 
 class GaugeBar(Static):
@@ -479,7 +481,7 @@ class UsageHistoryPlot(PlotextPlot):
 
 
 class ProviderHistory(Vertical):
-    """The most pressured gauge for one provider, with recent-rate evidence."""
+    """The most pressured gauge for one provider, with rate-regime evidence."""
 
     def __init__(self, snapshot: ProviderSnapshot) -> None:
         super().__init__(id=f"history-{snapshot.key}")
@@ -511,16 +513,30 @@ class ProviderHistory(Vertical):
             return
 
         yield UsageHistoryPlot(gauge, self.samples)
-        recent = history.trailing_rate(self.samples, gauge.window_seconds)
         remaining = gauge.resets_at.timestamp() - self.samples[-1]["t"]
-        if recent is not None and remaining > 0:
-            required = max(0.0, 100 - self.samples[-1]["pct"]) / remaining * 86_400
-            span = _rate_span(history.trailing_horizon(gauge.window_seconds))
+        inferred = history.segments(self.samples)
+        if not inferred or remaining <= 0:
             yield Static(
-                f"recent ({span}): {recent:.1f}%/day · "
-                f"required: {required:.1f}%/day",
+                "not enough movement to infer a rate yet",
                 classes="history-rate",
             )
+            return
+
+        required = max(0.0, 100 - self.samples[-1]["pct"]) / remaining * 86_400
+        chunks = [
+            f"{segment.rate_per_day:.1f}%/d "
+            f"({_segment_duration(segment.end - segment.start)})"
+            for segment in inferred
+        ]
+        latest_rate = inferred[-1].rate_per_day
+        if latest_rate > required * (1 + PACE_TOLERANCE):
+            chunks[-1] += f" {PACE_ARROW['slow_down']}"
+        elif latest_rate < required * (1 - PACE_TOLERANCE):
+            chunks[-1] += f" {PACE_ARROW['spare_capacity']}"
+        yield Static(
+            f"rate: {' → '.join(chunks)} · required {required:.1f}%/d",
+            classes="history-rate",
+        )
 
     def on_mount(self) -> None:
         self.border_title = self.snapshot.display_name

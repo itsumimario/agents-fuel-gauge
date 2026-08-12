@@ -57,8 +57,11 @@ UsageHistoryPlot {
     color: $text-muted;
 }
 
+/* `auto`, not 1: three segments plus the required rate outgrow a phone-width
+   terminal, and a cropped rate line silently drops the verdict arrow — the one
+   character the line exists to carry. */
 .history-rate {
-    height: 1;
+    height: auto;
     text-align: center;
     color: $text-muted;
 }

@@ -75,8 +75,9 @@ uv tool install git+https://github.com/itsumimario/agents-fuel-gauge.git
   days left.
 - **History makes a course correction visible.** Press `p` to compare the
   actual trace with the on-budget diagonal and the rate required from here.
-  A recent-rate readout can show that rationing is working even while the
-  whole-window average still reflects an early binge.
+  Rate chunks summarize stretches of steady percent-tick movement, so a new
+  pace stays visible beside the old one. Only the latest chunk gets an arrow:
+  older chunks are context, not behavior you can still change.
 - **One-shot from the command line.** `afg --check` prints once and exits, for
   scripts, prompts, cron, and CI.
 - **A tiny JSON service for anything else.** `afg --json` gives other tools a
@@ -153,9 +154,10 @@ Refreshes every 60s (`-i` to change, 15s minimum). A failed refresh never
 blanks a panel — the last known numbers stay up behind a warning.
 
 The history view plots the gauge under the most pace pressure for each
-provider. Its recent rate is display-only: the versioned pace advice continues
-to use the whole-window average, so existing `--check` and `--json` semantics
-do not change.
+provider. Its display-only rate chunks group stretches of steady percent-tick
+movement; only the latest chunk gets a verdict against the rate required from
+here. The versioned pace advice continues to use the whole-window average, so
+existing `--check` and `--json` semantics do not change.
 
 ### One-shot: `--check`
 

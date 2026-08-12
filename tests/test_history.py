@@ -18,6 +18,25 @@ def isolated_history(tmp_path, monkeypatch):
     monkeypatch.setenv("AFG_CACHE_DIR", str(tmp_path))
 
 
+def _quantized_samples(regimes, sample_seconds=10 * 60):
+    """Sample an ideal piecewise rate through the integer meters providers expose."""
+    boundaries = []
+    elapsed = 0.0
+    for days, rate in regimes:
+        elapsed += days * DAY
+        boundaries.append((elapsed, rate))
+
+    samples = []
+    for timestamp in range(0, int(elapsed) + 1, sample_seconds):
+        used = 0.0
+        opened = 0.0
+        for boundary, rate in boundaries:
+            used += max(0.0, min(timestamp, boundary) - opened) * rate / DAY
+            opened = boundary
+        samples.append({"t": float(timestamp), "pct": float(int(used))})
+    return samples
+
+
 def test_append_and_read_round_trip_preserves_the_sample():
     history.append_sample("claude", "7d all models", 42.5, NOW)
 
@@ -85,37 +104,117 @@ def test_window_slice_keeps_the_backward_sample_that_marks_a_reset():
     assert [sample["pct"] for sample in samples] == [5, 9]
 
 
-def test_recent_rate_sees_rationing_after_an_early_binge():
-    """The recent readout exists to make changed behaviour visible.
-
-    Eighty percent in two days projects a ruinous whole-window average. Once
-    the user settles at four percentage points per day, the trailing fit should
-    say four rather than continuing to punish the old binge.
-    """
+def test_corners_keep_only_rising_ticks_at_sample_midpoints():
+    """Staircase plateaus and provider corrections must not become rates."""
     samples = [
-        {"t": 0.0, "pct": 0.0},
-        {"t": 2 * DAY, "pct": 80.0},
+        {"t": 0, "pct": 10},
+        {"t": 60, "pct": 10},
+        {"t": 120, "pct": 12},
+        {"t": 180, "pct": 12},
+        {"t": 300, "pct": 11},
+        {"t": 360, "pct": 14},
     ]
-    for hours in (2, 4, 6):
-        samples.append(
-            {"t": 2 * DAY + hours * 3_600, "pct": 80 + 4 * hours / 24}
-        )
 
-    recent = history.trailing_rate(samples, WEEK)
-    whole_window_average = samples[-1]["pct"] / (samples[-1]["t"] / DAY)
+    extracted = history.corners(samples)
 
-    assert recent == pytest.approx(4.0)
-    assert whole_window_average > 30
+    assert [(corner.t, corner.delta_pct) for corner in extracted] == [
+        (90, 2),
+        (330, 3),
+    ]
 
 
-def test_recent_rate_requires_two_points_spanning_half_an_hour():
-    assert history.trailing_rate([{"t": 0, "pct": 5}], WEEK) is None
-    assert history.trailing_rate(
-        [{"t": 0, "pct": 5}, {"t": 29 * 60, "pct": 6}], WEEK
-    ) is None
-    assert history.trailing_rate(
-        [{"t": 0, "pct": 5}, {"t": 30 * 60, "pct": 6}], WEEK
-    ) is not None
+def test_segments_recover_a_corrected_binge_from_integer_samples():
+    """The history line should preserve a real course correction as context."""
+    found = history.segments(_quantized_samples([(2, 20), (4, 10)]))
+
+    assert len(found) == 2
+    assert [segment.rate_per_day for segment in found] == pytest.approx(
+        [20, 10], rel=0.04
+    )
+    assert found[0].end == pytest.approx(2 * DAY, abs=3 * 3_600)
+
+
+def test_slow_integer_meter_stays_one_regime():
+    """Twelve-hour tick spacing must not manufacture alternating rates."""
+    found = history.segments(_quantized_samples([(7, 2)]))
+
+    assert len(found) == 1
+    assert found[0].rate_per_day == pytest.approx(2, rel=0.04)
+
+
+def test_steady_weekly_rate_stays_one_regime():
+    """Quantization should not add a story when the user's pace never changed."""
+    found = history.segments(_quantized_samples([(4, 14.3)]))
+
+    assert len(found) == 1
+    assert found[0].rate_per_day == pytest.approx(14.3, rel=0.04)
+
+
+def test_sampling_gap_does_not_split_a_steady_regime():
+    """Time without afg running is part of the measured average, not a reset."""
+    samples = [
+        sample
+        for sample in _quantized_samples([(7, 10)])
+        if not 2.25 * DAY < sample["t"] < 3.25 * DAY
+    ]
+
+    found = history.segments(samples)
+
+    assert len(found) == 1
+    assert found[0].rate_per_day == pytest.approx(10, rel=0.04)
+
+
+def test_informative_silence_joins_the_latest_segment():
+    """A user who eased off entirely must not keep reading their old rate.
+
+    Corners exist only where percent moved, so a finished burst would stay
+    parked at its last tick and judge yesterday's pace forever — telling an
+    idle user to slow down, the exact misreading segmentation exists to fix.
+    Silence longer than the segment's own tick spacing is evidence.
+    """
+    samples = _quantized_samples([(2, 10), (1, 0)])
+
+    found = history.segments(samples)
+
+    assert len(found) == 1
+    assert found[-1].end == samples[-1]["t"]
+    assert found[-1].rate_per_day < 8  # ~10 if the idle day were ignored
+
+
+def test_ordinary_between_tick_silence_changes_nothing():
+    """The wait for the next integer tick is not a slowdown."""
+    samples = _quantized_samples([(2, 10)])
+
+    found = history.segments(samples)
+
+    assert len(found) == 1
+    assert found[0].rate_per_day == pytest.approx(10, rel=0.04)
+
+
+def test_five_distinct_rates_are_capped_at_three_segments():
+    """A one-line readout must stay scannable even when usage is erratic."""
+    samples = _quantized_samples(
+        [(0.5, 4), (0.5, 8), (0.5, 16), (0.5, 32), (0.5, 64)]
+    )
+
+    found = history.segments(samples)
+
+    assert 1 < len(found) <= 3
+
+
+def test_one_tick_fragment_is_absorbed_by_a_neighbor():
+    """One quantized step is noise and must never become a reported regime."""
+    samples = [
+        {"t": 0, "pct": 0},
+        {"t": 60, "pct": 1},
+        {"t": 120, "pct": 2},
+        {"t": 180, "pct": 8},
+    ]
+
+    found = history.segments(samples)
+
+    assert len(found) == 1
+    assert found[0].tick_count >= 2
 
 
 def test_recording_ignores_cached_carried_forward_and_failed_snapshots():
