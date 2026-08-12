@@ -50,6 +50,7 @@ PACE_ANSI = {
     "spare_capacity": "\033[32m",
     "on_track": "",
     "too_early": "",
+    "window_over": "",
 }
 LEGEND = (
     ("slow_down", "slow down"),

@@ -204,6 +204,48 @@ class TestMissingInformation:
         assert gauge(0, 0.0).pace(NOW) is None
 
 
+class TestWindowFullyElapsed:
+    """The reported bug: a snapshot past its reset said "↑ by -100%".
+
+    With zero seconds remaining the required-rate arithmetic degenerates to a
+    multiplier of zero, which the display dressed up as "speed up by -100%" —
+    and, being the smallest multiplier on the panel, that zero also crowned the
+    dead window the governing meter, silencing a 7d meter at 92% that had real
+    advice to give.
+    """
+
+    def _snapshot(self, *gauges) -> ProviderSnapshot:
+        return ProviderSnapshot(key="claude", display_name="Claude", gauges=list(gauges))
+
+    def test_budget_left_at_reset_is_not_an_instruction(self):
+        pace = gauge(8, 1.0, window=FIVE_HOURS).pace(NOW)
+        assert pace.verdict == "window_over"
+        assert pace.actionable is False
+        assert pace.change_percent is None
+        assert pace.direction == "hold"
+
+    def test_it_reads_as_a_word_never_a_negative_speed_up(self):
+        assert gauge(8, 1.0, window=FIVE_HOURS).pace(NOW).display == "at reset"
+
+    def test_the_multiplier_is_a_safe_no_op(self):
+        """Anything scaling a rate by it must not stop dead on a lapsed window."""
+        assert gauge(8, 1.0, window=FIVE_HOURS).pace(NOW).rate_adjustment == 1.0
+
+    def test_a_dead_window_cannot_govern(self):
+        """Its zero multiplier used to outrank every live meter's advice."""
+        lapsed = gauge(8, 1.0, window=FIVE_HOURS)
+        week = gauge(92, 0.5)
+        assert governing_indexes(self._snapshot(lapsed, week), NOW) == {1}
+
+    def test_an_untouched_lapsed_window_offers_no_headroom(self):
+        """Zero used with zero time left is not "room to speed up"."""
+        assert gauge(0, 1.0, window=FIVE_HOURS).pace(NOW).verdict == "window_over"
+
+    def test_exhausted_at_reset_still_shouts(self):
+        """100% keeps its ✗ even at the boundary; it must not be overlooked."""
+        assert gauge(100, 1.0, window=FIVE_HOURS).pace(NOW).verdict == "exhausted"
+
+
 class TestMetersAreNotIndependent:
     """The reported bug: one meter's slack licensing another meter's overspend.
 

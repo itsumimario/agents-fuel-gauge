@@ -58,6 +58,7 @@ PACE_ARROW = {
     "exhausted": "✗",
     "on_track": "",
     "too_early": "",
+    "window_over": "",
 }
 
 
@@ -323,7 +324,7 @@ class Pace:
 
     elapsed_fraction: float
     ratio: float
-    verdict: str  # "exhausted" | "slow_down" | "on_track" | "spare_capacity"
+    verdict: str  # one of PACE_ARROW's keys
     rate_adjustment: float
     exhausts_in_seconds: int | None
     exhausts_before_reset: bool
@@ -383,6 +384,7 @@ class Pace:
                 "exhausted": "spent",
                 "on_track": "on pace",
                 "too_early": "too new",
+                "window_over": "at reset",
             }.get(self.verdict, "")
         return f"by {change:.0f}%{'+' if self.at_cap else ''}"
 
@@ -426,6 +428,7 @@ class Pace:
             "exhausted": "spent; wait for its reset",
             "on_track": "this meter's average rate lasts to its reset",
             "too_early": "window too new to judge this meter",
+            "window_over": "window fully elapsed; nothing left to steer",
         }[self.verdict]
 
     def to_dict(self) -> dict:
@@ -514,6 +517,16 @@ class Gauge:
 
         if self.percent >= 100:
             return Pace(elapsed_fraction, float("inf"), "exhausted", 0.0, 0, True)
+
+        if remaining <= 0:
+            # Time is up but budget is left — the normal state of a snapshot
+            # that outlives its window between polls. `rate_adjustment` looks
+            # forward over the time that remains, and none does: the arithmetic
+            # degenerates to a multiplier of zero, which rendered as the
+            # instruction "speed up by -100%" — and, being the smallest
+            # multiplier on the panel, stole governance from meters with real
+            # advice to give. There is nothing left to steer, so say so.
+            return Pace(elapsed_fraction, used, "window_over", 1.0, None, False)
 
         if used <= 0:
             # Nothing spent: the whole budget is available, but there is no

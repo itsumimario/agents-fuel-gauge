@@ -67,6 +67,7 @@ PACE_COLOR = {
     "spare_capacity": "green",
     "on_track": "dim",
     "too_early": "dim",
+    "window_over": "dim",
 }
 
 # Every glyph that can appear in a row, spelled out once beneath the panels.
