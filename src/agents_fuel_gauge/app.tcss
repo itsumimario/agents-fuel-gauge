@@ -11,6 +11,12 @@ Screen {
     scrollbar-size-vertical: 1;
 }
 
+#plots {
+    padding: 0 1;
+    height: 1fr;
+    scrollbar-size-vertical: 1;
+}
+
 /* Sits under both panels. `height: auto` lets it wrap to two or three lines on
    a narrow terminal instead of being cropped — vertical space is cheap here,
    horizontal space is not. */
@@ -28,6 +34,33 @@ ProviderPanel {
     border-subtitle-color: $text-muted;
     padding: 1 2;
     margin: 1 0 0 0;
+}
+
+ProviderHistory {
+    height: 1fr;
+    min-height: 12;
+    border: round $panel-lighten-2;
+    border-title-color: $text;
+    border-title-style: bold;
+    padding: 0 1;
+    margin: 1 0 0 0;
+}
+
+UsageHistoryPlot {
+    height: 1fr;
+    min-height: 8;
+}
+
+.history-empty {
+    height: 1fr;
+    content-align: center middle;
+    color: $text-muted;
+}
+
+.history-rate {
+    height: 1;
+    text-align: center;
+    color: $text-muted;
 }
 
 GaugeBar {

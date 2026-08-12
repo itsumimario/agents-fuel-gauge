@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime
 
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.containers import Vertical, VerticalScroll
 from textual.widgets import Footer, Header, Static
+from textual_plotext import PlotextPlot
 
+from . import history
 from .models import (
     PACE_ARROW,
     Gauge,
@@ -96,6 +99,22 @@ def color_of(gauge: Gauge) -> str:
     the pace arrow's colour — a red bar with a green arrow is a real state:
     nearly spent, but the window resets before that matters."""
     return SEVERITY_COLOR.get(gauge.severity, "green")
+
+
+def _axis_label(timestamp: float, window_seconds: int) -> str:
+    """Three short wall-clock anchors are enough to orient a quota trace."""
+    local = datetime.fromtimestamp(timestamp).astimezone()
+    return (
+        local.strftime("%a %d")
+        if window_seconds >= 86_400
+        else local.strftime("%H:%M")
+    )
+
+
+def _rate_span(seconds: float) -> str:
+    minutes = round(seconds / 60)
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h" if not minutes else f"{hours}h {minutes}m"
 
 
 class GaugeBar(Static):
@@ -408,6 +427,105 @@ class Legend(Static):
         return text
 
 
+# Plotext calls ANSI colour 3 "orange" and silently drops names it does not
+# know — including "yellow", the one Rich name the bars use for warning
+# severity. A dropped colour leaves the trace in the widget theme's accent,
+# so the severity most worth signalling is the one that would lose its
+# colour. Translate explicitly rather than trusting Rich names to transfer.
+PLOTEXT_SEVERITY = {
+    "normal": "green",
+    "warning": "orange",
+    "critical": "red",
+}
+
+
+class UsageHistoryPlot(PlotextPlot):
+    """A gauge trace against the two straight lines that give it context."""
+
+    def __init__(self, gauge: Gauge, samples: list[history.Sample]) -> None:
+        super().__init__()
+        self.gauge = gauge
+        self.samples = samples
+
+    def on_mount(self) -> None:
+        super().on_mount()
+        gauge = self.gauge
+        reset = gauge.resets_at.timestamp()
+        window = gauge.window_seconds
+        opened = reset - window
+        midpoint = opened + window / 2
+        xs = [sample["t"] for sample in self.samples]
+        ys = [sample["pct"] for sample in self.samples]
+
+        self.plt.plot([opened, reset], [0, 100], color="gray", style="dim")
+        self.plt.plot(xs, ys, color=PLOTEXT_SEVERITY.get(gauge.severity, "green"))
+        if gauge.percent < 100:
+            # Dot markers keep the chord distinguishable from the trace when a
+            # normal-severity gauge makes both of them green.
+            self.plt.plot(
+                [xs[-1], reset], [ys[-1], 100], color="green", marker="dot"
+            )
+
+        # Plotext's automatic ticks are dense enough to turn Unix timestamps
+        # into a wall of digits. Start, middle, and reset answer the only time
+        # questions the chart needs without competing with the trace.
+        ticks = [opened, midpoint, reset]
+        self.plt.xticks(ticks, [_axis_label(value, window) for value in ticks])
+        self.plt.yticks([0, 50, 100], ["0%", "50%", "100%"])
+        self.plt.xlim(opened, reset)
+        self.plt.ylim(0, max(100, max(ys)))
+        self.plt.grid(horizontal=True, vertical=False)
+        self.plt.title(f"{gauge.label} · {gauge.percent:.0f}%")
+
+
+class ProviderHistory(Vertical):
+    """The most pressured gauge for one provider, with recent-rate evidence."""
+
+    def __init__(self, snapshot: ProviderSnapshot) -> None:
+        super().__init__(id=f"history-{snapshot.key}")
+        self.snapshot = snapshot
+        self.gauge = snapshot.tightest
+        self.samples = (
+            history.read_window(
+                snapshot.key,
+                self.gauge.label,
+                self.gauge.resets_at,
+                self.gauge.window_seconds,
+            )
+            if self.gauge is not None
+            else []
+        )
+
+    def compose(self) -> ComposeResult:
+        gauge = self.gauge
+        if (
+            gauge is None
+            or gauge.resets_at is None
+            or not gauge.window_seconds
+            or len(self.samples) < 2
+        ):
+            yield Static(
+                "no history yet — samples accrue as afg polls",
+                classes="history-empty",
+            )
+            return
+
+        yield UsageHistoryPlot(gauge, self.samples)
+        recent = history.trailing_rate(self.samples, gauge.window_seconds)
+        remaining = gauge.resets_at.timestamp() - self.samples[-1]["t"]
+        if recent is not None and remaining > 0:
+            required = max(0.0, 100 - self.samples[-1]["pct"]) / remaining * 86_400
+            span = _rate_span(history.trailing_horizon(gauge.window_seconds))
+            yield Static(
+                f"recent ({span}): {recent:.1f}%/day · "
+                f"required: {required:.1f}%/day",
+                classes="history-rate",
+            )
+
+    def on_mount(self) -> None:
+        self.border_title = self.snapshot.display_name
+
+
 class FuelGaugeApp(App):
     """Live view of Claude and Codex quota, scoped model caps included."""
 
@@ -418,6 +536,7 @@ class FuelGaugeApp(App):
         ("q", "quit", "Quit"),
         ("r", "refresh_now", "Refresh"),
         ("t", "cycle_theme", "Theme"),
+        ("p", "toggle_history", "History"),
     ]
 
     def __init__(self, interval: float = 60.0, fetcher=None) -> None:
@@ -428,10 +547,14 @@ class FuelGaugeApp(App):
         # still monkeypatch the module-level fetch_all.
         self.fetcher = fetcher or fetch_all
         self.snapshots: list[ProviderSnapshot] = []
+        self.showing_history = False
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         yield VerticalScroll(id="panels")
+        plots = VerticalScroll(id="plots")
+        plots.display = False
+        yield plots
         # Below both panels, as one key for both, so it reads as a key rather
         # than as a message about whichever panel it happens to sit next to.
         yield Legend(id="legend")
@@ -495,6 +618,8 @@ class FuelGaugeApp(App):
             merged.append(snapshot)
 
         self.snapshots = merged
+        if self.showing_history:
+            await self._refresh_plots()
 
         # No global "updated at" here — each panel reports its own age, because
         # providers are fetched concurrently and one can go stale while the
@@ -508,6 +633,27 @@ class FuelGaugeApp(App):
     async def action_refresh_now(self) -> None:
         self.sub_title = "refreshing…"
         await self.poll()
+
+    async def _refresh_plots(self) -> None:
+        """Rebuild only for new data or an explicit switch to history.
+
+        Plotext rendering is materially heavier than changing a countdown
+        label. Keeping it out of `_tick` is what lets the one-second timer stay
+        cheap even while the history pane is visible.
+        """
+        plots = self.query_one("#plots", VerticalScroll)
+        await plots.remove_children()
+        await plots.mount_all(
+            [ProviderHistory(snapshot) for snapshot in self.snapshots]
+        )
+
+    async def action_toggle_history(self) -> None:
+        self.showing_history = not self.showing_history
+        self.query_one("#panels", VerticalScroll).display = not self.showing_history
+        self.query_one(Legend).display = not self.showing_history
+        self.query_one("#plots", VerticalScroll).display = self.showing_history
+        if self.showing_history:
+            await self._refresh_plots()
 
     def action_cycle_theme(self) -> None:
         self.theme = (

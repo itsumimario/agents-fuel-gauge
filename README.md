@@ -73,6 +73,10 @@ uv tool install git+https://github.com/itsumimario/agents-fuel-gauge.git
 - **It tells you how much to slow down or speed up**, per meter, not just how
   full the bar is. 91% used is fine with an hour left and a crisis with four
   days left.
+- **History makes a course correction visible.** Press `p` to compare the
+  actual trace with the on-budget diagonal and the rate required from here.
+  A recent-rate readout can show that rationing is working even while the
+  whole-window average still reflects an early binge.
 - **One-shot from the command line.** `afg --check` prints once and exits, for
   scripts, prompts, cron, and CI.
 - **A tiny JSON service for anything else.** `afg --json` gives other tools a
@@ -142,10 +146,16 @@ fetched independently and one can go stale while the other keeps refreshing.
 | --- | ------ |
 | `r` | refresh now |
 | `t` | toggle light/dark |
+| `p` | toggle quota bars/history plots |
 | `q` | quit |
 
 Refreshes every 60s (`-i` to change, 15s minimum). A failed refresh never
 blanks a panel — the last known numbers stay up behind a warning.
+
+The history view plots the gauge under the most pace pressure for each
+provider. Its recent rate is display-only: the versioned pace advice continues
+to use the whole-window average, so existing `--check` and `--json` semantics
+do not change.
 
 ### One-shot: `--check`
 
@@ -304,6 +314,13 @@ afg --no-cache        # always call the API (can earn you a 429)
 afg --clear-cache     # drop cached readings and any standing backoff
 ```
 
+Fresh polls also append one JSONL sample per gauge under
+`$XDG_CACHE_HOME/agents-fuel-gauge/history/` (normally
+`~/.cache/agents-fuel-gauge/history/`). With `AFG_CACHE_DIR` set, history lives
+under `$AFG_CACHE_DIR/history/`. Repeated unchanged values within five minutes
+are collapsed, corrupt lines are ignored, and samples older than 14 days are
+pruned automatically.
+
 ## Updating
 
 ```sh
@@ -348,9 +365,9 @@ already on your machine:
 | Codex | `chatgpt.com/backend-api/wham/usage` |
 
 Nothing is sent anywhere else. No telemetry, no server, no third party. The
-only thing written to disk is the response cache described above, under your
-XDG cache directory. Account emails are masked and paths render as `~/…`, so
-screenshots stay shareable.
+response cache and local percentage history described above are the only data
+written to disk, both under your XDG cache directory. Account emails are
+masked and paths render as `~/…`, so screenshots stay shareable.
 
 ## Notes
 

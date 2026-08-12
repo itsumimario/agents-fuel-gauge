@@ -25,7 +25,7 @@ from pathlib import Path
 
 import httpx
 
-from . import cache
+from . import cache, history
 from .models import Gauge, ProviderSnapshot, derive_severity, mask_email
 
 CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
@@ -459,8 +459,14 @@ async def fetch_all(
     each. Pass 0 to force a live fetch.
     """
     async with httpx.AsyncClient(timeout=TIMEOUT) as client:
-        return list(
+        snapshots = list(
             await asyncio.gather(
                 fetch_claude(client, max_age), fetch_codex(client, max_age)
             )
         )
+    # This is the one path shared by the TUI, --check, and --json. Recording
+    # lower down would miss one provider when its parser grows a new entry
+    # point; recording higher up would make every caller remember the rule that
+    # cached and carried-forward numbers are not new evidence.
+    history.record_snapshots(snapshots)
+    return snapshots

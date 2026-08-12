@@ -5,8 +5,15 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from agents_fuel_gauge import app as app_module
-from agents_fuel_gauge.app import FuelGaugeApp, GaugeBar, Legend, ProviderPanel
+from agents_fuel_gauge import app as app_module, history
+from agents_fuel_gauge.app import (
+    FuelGaugeApp,
+    GaugeBar,
+    Legend,
+    ProviderHistory,
+    ProviderPanel,
+    UsageHistoryPlot,
+)
 from agents_fuel_gauge.models import (
     PACE_ARROW,
     Gauge,
@@ -91,6 +98,82 @@ async def test_panels_and_bars_mount(stub):
         panels = app.query(ProviderPanel)
         assert [p.snapshot.key for p in panels] == ["claude", "codex"]
         assert len(app.query(GaugeBar)) == 4
+
+
+def test_history_binding_is_registered_for_the_footer():
+    """Discoverability matters for a pane with no always-visible tab."""
+    assert ("p", "toggle_history", "History") in FuelGaugeApp.BINDINGS
+
+
+def test_plot_severity_colors_are_names_plotext_actually_inks():
+    """Plotext drops unknown colour names silently instead of raising.
+
+    The Rich name "yellow" is one it drops, so a warning-severity trace —
+    the severity most worth signalling — rendered in the widget theme's
+    accent instead. Building a real figure per name pins the whole failure
+    mode, not just the one name that bit us.
+    """
+    import plotext
+
+    assert set(app_module.PLOTEXT_SEVERITY) == set(app_module.SEVERITY_COLOR)
+    for name in app_module.PLOTEXT_SEVERITY.values():
+        plotext.clear_figure()
+        plotext.plot_size(24, 6)
+        plotext.theme("clear")  # no chrome colours: any ink must be the series
+        plotext.plot([0, 1], [0, 1], color=name)
+        assert "\x1b[38;5;" in plotext.build()
+    plotext.clear_figure()
+
+
+async def test_history_key_switches_views_and_mounts_provider_plots(
+    stub, tmp_path, monkeypatch
+):
+    """The switched view keeps the existing dashboard layout undisturbed."""
+    monkeypatch.setenv("AFG_CACHE_DIR", str(tmp_path))
+    for snapshot in stub["snapshots"]:
+        gauge = snapshot.tightest
+        history.append_sample(
+            snapshot.key, gauge.label, gauge.percent - 1, NOW - timedelta(hours=1)
+        )
+        history.append_sample(snapshot.key, gauge.label, gauge.percent, NOW)
+
+    app = FuelGaugeApp(interval=3600)
+    async with app.run_test(size=(100, 36)) as pilot:
+        await pilot.pause()
+        plots = app.query_one("#plots")
+        assert plots.display is False
+
+        await pilot.press("p")
+        await pilot.pause()
+
+        assert plots.display is True
+        assert app.query_one("#panels").display is False
+        assert len(app.query(ProviderHistory)) == 2
+        assert len(app.query(UsageHistoryPlot)) == 2
+        rates = app.query(".history-rate")
+        assert len(rates) == 2
+        assert all("required:" in str(line.render()) for line in rates)
+
+        await pilot.press("p")
+        await pilot.pause()
+        assert plots.display is False
+        assert app.query_one("#panels").display is True
+
+
+async def test_history_view_explains_that_samples_have_not_accrued(
+    stub, tmp_path, monkeypatch
+):
+    """An empty chart should read as young data, not a rendering failure."""
+    monkeypatch.setenv("AFG_CACHE_DIR", str(tmp_path))
+    app = FuelGaugeApp(interval=3600)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("p")
+        await pilot.pause()
+
+        placeholders = app.query(".history-empty")
+        assert len(placeholders) == 2
+        assert all("samples accrue" in str(item.render()) for item in placeholders)
 
 
 async def test_scoped_fable_bar_is_rendered(stub):
