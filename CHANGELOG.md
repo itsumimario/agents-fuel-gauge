@@ -13,6 +13,8 @@ before 0.8.0 were documented in the Git commit history.
   rate; `d` becomes `Overview` while viewing them.
 - Added deterministic synthetic README screenshots for Recorded, Full, and
   Details history views.
+- Added a short README guide to reading History and choosing between Recorded,
+  Full, and Details.
 
 ### Changed
 
@@ -20,6 +22,8 @@ before 0.8.0 were documented in the Git commit history.
   to fitted segment rate in Details.
 - The `z Zoom` action is hidden in Details, where each segment already has its
   own viewport, and the default overview range is now labeled `Recorded`.
+- Documentation screenshots now preserve the dashboard's semantic colors even
+  when regenerated in an environment that requests monochrome output.
 
 ## 0.9.1 - 2026-08-13
 

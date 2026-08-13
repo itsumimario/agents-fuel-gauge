@@ -20,6 +20,7 @@ Two artefacts per theme:
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import sys
 from pathlib import Path
@@ -40,6 +41,7 @@ DETAILS_SIZE = (96, 52)
 
 # Verified to cover U+2588 U+2591 U+256D U+2193 U+2191 on a stock Linux font set.
 RASTER_FONT = "DejaVu Sans Mono"
+STYLE_COLOR = re.compile(r"-r\d+\s*\{\s*fill:\s*#([0-9a-fA-F]{6})")
 
 
 def strip_remote_font(svg: str) -> str:
@@ -47,6 +49,21 @@ def strip_remote_font(svg: str) -> str:
     svg = re.sub(r",\s*\n?\s*url\([^)]*\)\s*format\([^)]*\)", "", svg)
     svg = re.sub(r"url\(['\"]?https?://[^)]*\)", "", svg)
     return "\n".join(line.rstrip() for line in svg.splitlines())
+
+
+def require_semantic_colors(svg: str) -> None:
+    """Fail generation if Textual flattened every content color to gray."""
+    chromatic = 0
+    for encoded in STYLE_COLOR.findall(svg):
+        red, green, blue = (
+            int(encoded[index : index + 2], 16) for index in (0, 2, 4)
+        )
+        if max(red, green, blue) - min(red, green, blue) >= 32:
+            chromatic += 1
+    if chromatic < 3:
+        raise RuntimeError(
+            "screenshot lost its semantic colors; refusing to overwrite docs"
+        )
 
 
 def synthetic_series(
@@ -107,14 +124,18 @@ async def shoot(
         return snapshots[:1] if view == "details" else snapshots
 
     original_read_window = history.read_window
-    history.read_window = lambda provider, label, *_: generated.get(
-        (provider, label), []
-    )
-    app = FuelGaugeApp(
-        interval=3600,
-        fetcher=fetch_demo if view == "dashboard" else fetch_synthetic,
-    )
+    original_no_color = os.environ.pop("NO_COLOR", None)
     try:
+        history.read_window = lambda provider, label, *_: generated.get(
+            (provider, label), []
+        )
+        # Documentation screenshots are a visual product. Do not let an
+        # agent, CI runner, or monochrome shell silently bleach their semantic
+        # severity colors through the conventional NO_COLOR environment flag.
+        app = FuelGaugeApp(
+            interval=3600,
+            fetcher=fetch_demo if view == "dashboard" else fetch_synthetic,
+        )
         async with app.run_test(size=size) as pilot:
             app.theme = theme
             await pilot.pause()
@@ -129,8 +150,11 @@ async def shoot(
                 await pilot.press("d")
                 await pilot.pause()
             svg = app.export_screenshot(title="agents-fuel-gauge")
+            require_semantic_colors(svg)
     finally:
         history.read_window = original_read_window
+        if original_no_color is not None:
+            os.environ["NO_COLOR"] = original_no_color
 
     path = OUT / f"{stem}.svg"
     path.write_text(strip_remote_font(svg))

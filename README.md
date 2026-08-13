@@ -167,10 +167,22 @@ blanks a panel — the last known numbers stay up behind a warning.
 At phone widths the clickable key buttons wrap onto a second row instead of
 scrolling off-screen.
 
-The history view plots the gauge under the most pace pressure for each
-provider. Its display-only rate chunks group stretches of steady percent-tick
-movement; only the latest chunk gets a verdict against the rate required from
-here.
+#### History at a glance
+
+- **History (`h`)** replaces the quota bars with each provider's tightest
+  meter over time. The solid line is observed usage; the gray diagonal is an
+  even budget pace; the dotted line is the pace needed from the latest sample
+  to reach 100% exactly at reset. The rate readout beneath the plot summarizes
+  changes in how quickly usage was rising; only its latest rate gets an advice
+  arrow, because older rates are context rather than behavior you can change.
+- **Zoom (`z`)** switches the overview between **Recorded**, which enlarges the
+  part AFG has actually observed, and **Full**, which restores the entire quota
+  window from 0–100%. It changes only the viewport, never the usage data or
+  advice.
+- **Details (`d`)** turns up to three inferred steady-rate portions into
+  separate, newest-first plots. Each portion gets its own scale plus its time
+  range, percentage change, duration, and fitted daily rate. Press `d` again
+  for **Overview**.
 
 #### Recorded and Full overview
 
@@ -194,13 +206,11 @@ before the trace or future days that have not happened. Press `z` for the
 #### Details
 
 Press `d` when the overview compresses a meaningful pace change too tightly.
-**Details** uses the same rate chunks shown in the overview readout, but gives
-up to three of them their own vertically stacked plots. They are newest first
-and independently scaled, so a short correction remains readable on a narrow
-screen. Each plot states its local time range, percentage change, duration, and
-fitted daily rate. If there is not enough movement to infer a segment yet, AFG
-says so instead of inventing one. In Details, `d` becomes **Overview** and `z`
-is hidden because the segment plots already own their viewports.
+The same rate chunks shown beneath the overview become independently scaled,
+vertically stacked plots, so a short correction remains readable on a narrow
+screen. If there is not enough movement to infer a segment yet, AFG says so
+instead of inventing one. In Details, `z` is hidden because the segment plots
+already own their viewports.
 
 <p align="center">
   <img alt="Details history view showing three newest-first synthetic Claude rate segments" src="docs/history-details-dark.png" width="900">
@@ -208,11 +218,11 @@ is hidden because the segment plots already own their viewports.
 
 <p align="center"><sub>All README history is deterministic synthetic demo data; no account history is read.</sub></p>
 
-The graph legend decodes the solid usage trace (green normal, yellow warning,
+The graph legend decodes the solid usage trace (green normal, orange warning,
 red critical), the dim gray ideal-budget line, and the green dotted path needed
 to reach 100% at reset. In Details, the gray line instead marks the fitted rate
-for that segment. The versioned pace advice continues to use the whole-window
-average, so changing the chart range or mode changes no directive.
+for that segment. Pace advice continues to use the whole-window average, so
+changing the chart range or mode changes no directive.
 
 ### One-shot: `--check`
 
