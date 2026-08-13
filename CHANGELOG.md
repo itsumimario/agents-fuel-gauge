@@ -3,6 +3,19 @@
 Notable user-facing changes to agents-fuel-gauge are recorded here. Releases
 before 0.8.0 were documented in the Git commit history.
 
+## 0.9.1 - 2026-08-13
+
+### Fixed
+
+- Masked provider accounts no longer flash at mount and disappear on the first
+  one-second freshness update. Narrow panels now drop the plan first and use a
+  compact age before sacrificing the account.
+- The `z Zoom` action is now shown only in history, where it has an effect.
+
+### Release
+
+- Restored annotated release tags for every untagged version from 0.5.1 onward.
+
 ## 0.9.0 - 2026-08-13
 
 ### Added

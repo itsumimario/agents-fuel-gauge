@@ -147,6 +147,8 @@ tells you what to actually change.
 
 Each panel shows its own last-updated age, because the two providers are
 fetched independently and one can go stale while the other keeps refreshing.
+The masked account remains visible after the first refresh; at phone widths the
+plan label yields first and the age becomes compact before the account yields.
 
 ### Live dashboard
 
@@ -155,7 +157,7 @@ fetched independently and one can go stale while the other keeps refreshing.
 | `r` | refresh now |
 | `t` | switch to `Light` or `Dark` (the button names the destination) |
 | `h` | toggle quota bars/history plots |
-| `z` | toggle detailed/full history range |
+| `z` | toggle detailed/full history range (shown in history only) |
 | `o` | open `Options` |
 | `q` | quit |
 

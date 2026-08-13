@@ -212,15 +212,16 @@ async def test_footer_wraps_all_clickable_actions_onto_two_rows():
     async with app.run_test(size=(80, 24)) as pilot:
         await pilot.pause()
         footer = app.query_one(ResponsiveFooter)
-        assert len(footer.children) == 6
+        assert len(footer.children) == 5
+        assert all("Zoom" not in child.render().plain for child in footer.children)
         assert not footer.has_class("-wrapped")
         assert len({child.region.y for child in footer.children}) == 1
 
-        await pilot.resize_terminal(50, 24)
+        await pilot.resize_terminal(40, 24)
         await pilot.pause()
         assert footer.has_class("-wrapped")
         assert footer.size.height == 2
-        assert len(footer.children) == 6
+        assert len(footer.children) == 5
         assert len({child.region.y for child in footer.children}) == 2
 
 
@@ -323,12 +324,17 @@ async def test_history_key_switches_views_and_mounts_provider_plots(
     async with app.run_test(size=(100, 36)) as pilot:
         await pilot.pause()
         plots = app.query_one("#plots")
+        footer = app.query_one(ResponsiveFooter)
         assert plots.display is False
+        assert "z" not in app.active_bindings
+        assert all("Zoom" not in child.render().plain for child in footer.children)
 
         await pilot.press("h")
         await pilot.pause()
 
         assert plots.display is True
+        assert app.active_bindings["z"].binding.description == "Zoom"
+        assert any("Zoom" in child.render().plain for child in footer.children)
         assert app.query_one("#panels").display is False
         history_legend = app.query_one(HistoryLegend)
         assert history_legend.display is True
@@ -364,6 +370,8 @@ async def test_history_key_switches_views_and_mounts_provider_plots(
         assert plots.display is False
         assert app.query_one("#panels").display is True
         assert history_legend.display is False
+        assert "z" not in app.active_bindings
+        assert all("Zoom" not in child.render().plain for child in footer.children)
 
 
 async def test_history_readout_chains_regimes_and_judges_only_the_latest(
@@ -607,6 +615,23 @@ async def test_each_panel_reports_its_own_age(stub):
         await pilot.pause()
         for panel in app.query(ProviderPanel):
             assert "ago" in panel.border_subtitle or "just now" in panel.border_subtitle
+
+
+async def test_each_masked_account_survives_the_first_sized_title_refresh(stub):
+    """The one-second age tick must not erase an account shown at mount."""
+    app = FuelGaugeApp(interval=3600)
+    async with app.run_test(size=(40, 24)) as pilot:
+        await pilot.pause()
+        account_panels = [
+            panel for panel in app.query(ProviderPanel) if panel.snapshot.account
+        ]
+        assert account_panels
+        for panel in account_panels:
+            account = panel.snapshot.account
+            assert account is not None  # narrowed by account_panels
+            assert account in panel.border_subtitle
+            panel.refresh_titles()  # exactly what the first one-second tick does
+            assert account in panel.border_subtitle
 
 
 async def test_refresh_updates_in_place_without_remounting(stub):

@@ -403,10 +403,13 @@ class ProviderPanel(Vertical):
         """
         self.border_title = self.snapshot.display_name
 
-        # Textual truncates a too-long border subtitle from the right, which is
-        # where the age sits — the one part that changes. So drop the account,
-        # then the plan, rather than let the freshness be silently cut off.
+        # Textual truncates a too-long border subtitle from the right. Keep the
+        # masked account stable after layout instead of flashing it once at
+        # mount and then replacing it on the first one-second age refresh. The
+        # plan yields first; a compact age keeps freshness beside the account
+        # at phone widths where the fully punctuated form does not fit.
         age = format_age(self.snapshot.captured_at)
+        compact_age = "now" if age == "just now" else age.removesuffix(" ago")
         # Width is 0 until the first layout pass. Assume there is room rather
         # than degrade on an unknown, or the panel flashes a stripped subtitle
         # before the first tick corrects it.
@@ -415,12 +418,17 @@ class ProviderPanel(Vertical):
             if self.size.width
             else 10_000
         )
-        for parts in (
-            [self.snapshot.plan, self.snapshot.account, age],
-            [self.snapshot.plan, age],
-            [age],
-        ):
-            candidate = " · ".join(p for p in parts if p)
+        full_candidates = (
+            " · ".join(
+                p for p in [self.snapshot.plan, self.snapshot.account, age] if p
+            ),
+            " · ".join(p for p in [self.snapshot.account, age] if p),
+            " ".join(p for p in [self.snapshot.account, compact_age] if p),
+            self.snapshot.account or "",
+            " · ".join(p for p in [self.snapshot.plan, age] if p),
+            age,
+        )
+        for candidate in full_candidates:
             if len(candidate) <= budget:
                 break
         self.border_subtitle = candidate
@@ -793,6 +801,7 @@ class FuelGaugeApp(App):
         if not installed:
             self.snapshots = []
             self.showing_history = False
+            self.refresh_bindings()
             panels.display = True
             plots.display = False
             await plots.remove_children()
@@ -866,6 +875,7 @@ class FuelGaugeApp(App):
         if not self.snapshots:
             return
         self.showing_history = not self.showing_history
+        self.refresh_bindings()
         self.query_one("#panels", VerticalScroll).display = not self.showing_history
         self.query_one(Legend).display = not self.showing_history
         self.query_one(HistoryLegend).display = self.showing_history
@@ -882,6 +892,8 @@ class FuelGaugeApp(App):
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         if action == "set_theme" and parameters:
             return self.theme != parameters[0]
+        if action == "toggle_history_zoom":
+            return self.showing_history and bool(self.snapshots)
         return super().check_action(action, parameters)
 
     def action_set_theme(self, theme: str) -> None:
