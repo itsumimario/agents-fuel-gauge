@@ -3,6 +3,25 @@
 Notable user-facing changes to agents-fuel-gauge are recorded here. Releases
 before 0.8.0 were documented in the Git commit history.
 
+## 0.12.0 - 2026-08-13
+
+### Added
+
+- Added history-only `m Meter` navigation to cycle each provider through every
+  gauge with recorded samples. The selection persists across refreshes, zoom,
+  and Details.
+
+### Fixed
+
+- Non-governing status such as `too new` remains visible instead of becoming a
+  blank advice column.
+- A young overlapping meter now vetoes “speed up” without manufacturing a
+  slowdown. This prevents short-window headroom from licensing usage that a
+  weekly budget has not yet cleared; machine-readable effective multipliers
+  are capped at `1.0` for the same reason.
+- Increase calculations that hit AFG's 10× safety cap now say `headroom`
+  instead of presenting an arbitrary `900%` magnitude as measured advice.
+
 ## 0.11.1 - 2026-08-13
 
 ### Fixed
