@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
+from math import ceil
 
+from rich.cells import cell_len
 from rich.text import Text
+from textual import events
 from textual.app import App, ComposeResult
 from textual.containers import Vertical, VerticalScroll
 from textual.widgets import Footer, Header, Static
@@ -127,11 +130,11 @@ def _history_viewport(
     """Return x-min, x-max, y-min, y-max for a history chart.
 
     The complete quota window is useful context and a poor default on a phone:
-    when history starts near the end of a seven-day window, almost the whole
-    chart is empty. Detailed mode starts just before the first recorded sample,
-    keeps the reset point so the required chord survives, and crops the percent
-    scale to the actual and ideal lines visible in that interval. Full mode is
-    retained as an explicit comparison rather than making detail irreversible.
+    a young trace wastes the right side on days that have not happened, while a
+    trace first observed near reset wastes the left side on days we never saw.
+    Detailed mode frames the recorded interval with a little breathing room and
+    fits the percent scale to the lines visible there. Full mode is retained as
+    an explicit comparison rather than making detail irreversible.
     """
     reset = gauge.resets_at.timestamp()
     window = float(gauge.window_seconds)
@@ -142,15 +145,29 @@ def _history_viewport(
         return opened, reset, 0.0, max(100.0, max(percentages))
 
     first_sample = max(opened, min(sample["t"] for sample in samples))
-    visible_seconds = max(1.0, reset - first_sample)
-    left_padding = min(first_sample - opened, visible_seconds * 0.05)
-    x_min = first_sample - left_padding
+    last_sample = min(reset, max(sample["t"] for sample in samples))
+    recorded_seconds = max(1.0, last_sample - first_sample)
+    padding = recorded_seconds * 0.05
+    x_min = max(opened, first_sample - padding)
+    x_max = min(reset, last_sample + padding)
+    if x_max <= x_min:
+        x_max = min(reset, x_min + 1.0)
 
     ideal_at_start = (x_min - opened) / window * 100.0
-    low = min(min(percentages), ideal_at_start)
-    high = max(100.0, max(percentages))
+    ideal_at_end = (x_max - opened) / window * 100.0
+    visible_values = [*percentages, ideal_at_start, ideal_at_end]
+    if last_sample < reset and x_max > last_sample:
+        required_at_end = percentages[-1] + (
+            (100.0 - percentages[-1])
+            * (x_max - last_sample)
+            / (reset - last_sample)
+        )
+        visible_values.append(required_at_end)
+
+    low = min(visible_values)
+    high = max(visible_values)
     y_padding = max(0.5, (high - low) * 0.05)
-    return x_min, reset, max(0.0, low - y_padding), high + y_padding
+    return x_min, x_max, max(0.0, low - y_padding), high + y_padding
 
 
 class GaugeBar(Static):
@@ -463,6 +480,67 @@ class Legend(Static):
         return text
 
 
+class HistoryLegend(Static):
+    """Decode the graph's line colours and styles without stealing plot room."""
+
+    def render(self) -> Text:
+        text = Text(no_wrap=False, overflow="fold")
+        for mark, style, meaning in (
+            ("━━", "green", "normal usage"),
+            ("━━", "yellow", "warning usage"),
+            ("━━", "red", "critical usage"),
+            ("━━", "dim grey70", "ideal budget pace"),
+            ("••", "green", "required path to 100% at reset"),
+        ):
+            text.append(mark, style=style)
+            text.append(f" {meaning}   ", style="dim")
+        return text
+
+
+class ResponsiveFooter(Footer):
+    """Keep every clickable key visible, using a second row when necessary."""
+
+    def compose(self) -> ComposeResult:
+        yield from super().compose()
+        self.call_after_refresh(self._sync_layout)
+
+    def bindings_changed(self, screen) -> None:
+        super().bindings_changed(screen)
+        self.call_after_refresh(self._sync_layout)
+
+    def on_resize(self, event: events.Resize) -> None:
+        self._sync_layout(event.size.width)
+
+    def _shown_bindings(self):
+        seen_actions: set[str] = set()
+        for active in self.screen.active_bindings.values():
+            binding = active.binding
+            if not binding.show or binding.action in seen_actions:
+                continue
+            seen_actions.add(binding.action)
+            yield binding
+
+    def _sync_layout(self, width: int | None = None) -> None:
+        bindings = list(self._shown_bindings())
+        if not bindings:
+            return
+        available = self.size.width if width is None else width
+        # FooterKey's default theme uses two cells around the key and one after
+        # the description. Count terminal cells rather than code points so the
+        # breakpoint remains correct if a key display is customized later.
+        single_row_width = sum(
+            cell_len(self.app.get_key_display(binding))
+            + cell_len(binding.description)
+            + 3
+            for binding in bindings
+        )
+        wrapped = len(bindings) > 1 and single_row_width > available
+        self.styles.grid_size_columns = (
+            ceil(len(bindings) / 2) if wrapped else len(bindings)
+        )
+        self.set_class(wrapped, "-wrapped")
+
+
 # Plotext calls ANSI colour 3 "orange" and silently drops names it does not
 # know — including "yellow", the one Rich name the bars use for warning
 # severity. A dropped colour leaves the trace in the widget theme's accent,
@@ -502,22 +580,34 @@ class UsageHistoryPlot(PlotextPlot):
         )
         midpoint = x_min + (x_max - x_min) / 2
         ideal_at_start = (x_min - opened) / window * 100
+        ideal_at_end = (x_max - opened) / window * 100
 
         self.plt.plot(
-            [x_min, reset], [ideal_at_start, 100], color="gray", style="dim"
+            [x_min, x_max],
+            [ideal_at_start, ideal_at_end],
+            color="gray",
+            style="dim",
         )
         self.plt.plot(xs, ys, color=PLOTEXT_SEVERITY.get(gauge.severity, "green"))
         if gauge.percent < 100:
             # Dot markers keep the chord distinguishable from the trace when a
             # normal-severity gauge makes both of them green.
+            required_at_end = ys[-1] + (
+                (100 - ys[-1]) * (x_max - xs[-1]) / (reset - xs[-1])
+                if reset > xs[-1]
+                else 0
+            )
             self.plt.plot(
-                [xs[-1], reset], [ys[-1], 100], color="green", marker="dot"
+                [xs[-1], x_max],
+                [ys[-1], required_at_end],
+                color="green",
+                marker="dot",
             )
 
         # Plotext's automatic ticks are dense enough to turn Unix timestamps
-        # into a wall of digits. Start, middle, and reset answer the only time
-        # questions the chart needs without competing with the trace.
-        ticks = [x_min, midpoint, reset]
+        # into a wall of digits. Three anchors across the visible range answer
+        # the time question without competing with the trace.
+        ticks = [x_min, midpoint, x_max]
         visible_seconds = x_max - x_min
         self.plt.xticks(
             ticks, [_axis_label(value, visible_seconds) for value in ticks]
@@ -605,13 +695,16 @@ class FuelGaugeApp(App):
 
     CSS_PATH = "app.tcss"
     TITLE = "agents fuel gauge"
+    COMMAND_PALETTE_BINDING = "o"
 
     BINDINGS = [
         ("q", "quit", "Quit"),
         ("r", "refresh_now", "Refresh"),
-        ("t", "cycle_theme", "Theme"),
+        ("t", "set_theme('textual-light')", "Light"),
+        ("t", "set_theme('textual-dark')", "Dark"),
         ("h", "toggle_history", "History"),
         ("z", "toggle_history_zoom", "Zoom"),
+        ("o", "command_palette", "Options"),
     ]
 
     def __init__(self, interval: float = 60.0, fetcher=None) -> None:
@@ -631,12 +724,15 @@ class FuelGaugeApp(App):
         plots = VerticalScroll(id="plots")
         plots.display = False
         yield plots
+        history_legend = HistoryLegend(id="history-legend")
+        history_legend.display = False
+        yield history_legend
         # Below both panels, as one key for both, so it reads as a key rather
         # than as a message about whichever panel it happens to sit next to.
         legend = Legend(id="legend")
         legend.display = False
         yield legend
-        yield Footer()
+        yield ResponsiveFooter(show_command_palette=False)
 
     def on_mount(self) -> None:
         self.sub_title = "fetching…"
@@ -700,6 +796,7 @@ class FuelGaugeApp(App):
             panels.display = True
             plots.display = False
             await plots.remove_children()
+            self.query_one(HistoryLegend).display = False
             self.query_one(Legend).display = False
             if not placeholders:
                 await panels.mount(
@@ -732,6 +829,7 @@ class FuelGaugeApp(App):
 
         self.snapshots = merged
         self.query_one(Legend).display = not self.showing_history
+        self.query_one(HistoryLegend).display = self.showing_history
         if self.showing_history:
             await self._refresh_plots()
 
@@ -770,6 +868,7 @@ class FuelGaugeApp(App):
         self.showing_history = not self.showing_history
         self.query_one("#panels", VerticalScroll).display = not self.showing_history
         self.query_one(Legend).display = not self.showing_history
+        self.query_one(HistoryLegend).display = self.showing_history
         self.query_one("#plots", VerticalScroll).display = self.showing_history
         if self.showing_history:
             await self._refresh_plots()
@@ -780,7 +879,11 @@ class FuelGaugeApp(App):
         self.history_full_window = not self.history_full_window
         await self._refresh_plots()
 
-    def action_cycle_theme(self) -> None:
-        self.theme = (
-            "textual-light" if self.theme == "textual-dark" else "textual-dark"
-        )
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        if action == "set_theme" and parameters:
+            return self.theme != parameters[0]
+        return super().check_action(action, parameters)
+
+    def action_set_theme(self, theme: str) -> None:
+        self.theme = theme
+        self.refresh_bindings()

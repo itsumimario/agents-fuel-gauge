@@ -9,9 +9,11 @@ from agents_fuel_gauge import app as app_module, history
 from agents_fuel_gauge.app import (
     FuelGaugeApp,
     GaugeBar,
+    HistoryLegend,
     Legend,
     ProviderHistory,
     ProviderPanel,
+    ResponsiveFooter,
     UsageHistoryPlot,
     _axis_label,
     _history_viewport,
@@ -159,6 +161,7 @@ async def test_no_installed_providers_gets_one_generic_empty_state():
         empty = app.query_one("#no-providers")
         assert "no supported agent CLIs" in empty.render().plain
         assert app.query_one(Legend).display is False
+        assert app.query_one(HistoryLegend).display is False
 
         await pilot.press("h")
         await pilot.pause()
@@ -170,7 +173,55 @@ def test_history_and_zoom_bindings_are_registered_for_the_footer():
     """Discoverability matters for a pane with no always-visible tab."""
     assert ("h", "toggle_history", "History") in FuelGaugeApp.BINDINGS
     assert ("z", "toggle_history_zoom", "Zoom") in FuelGaugeApp.BINDINGS
+    assert ("o", "command_palette", "Options") in FuelGaugeApp.BINDINGS
     assert not any(key == "p" for key, _, _ in FuelGaugeApp.BINDINGS)
+    assert not any(key == "ctrl+p" for key, _, _ in FuelGaugeApp.BINDINGS)
+
+
+async def test_theme_footer_names_the_action_and_options_opens_the_palette():
+    async def no_providers():
+        return []
+
+    app = FuelGaugeApp(interval=3600, fetcher=no_providers)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        footer = app.query_one(ResponsiveFooter)
+        footer_text = " ".join(child.render().plain for child in footer.children)
+        assert app.theme == "textual-dark"
+        assert app.active_bindings["t"].binding.description == "Light"
+        assert app.active_bindings["o"].binding.description == "Options"
+        assert "Light" in footer_text and "Options" in footer_text
+
+        await pilot.press("t")
+        await pilot.pause()
+        footer_text = " ".join(child.render().plain for child in footer.children)
+        assert app.theme == "textual-light"
+        assert app.active_bindings["t"].binding.description == "Dark"
+        assert "Dark" in footer_text and "Light" not in footer_text
+
+        await pilot.press("o")
+        await pilot.pause()
+        assert app.screen.id == "--command-palette"
+
+
+async def test_footer_wraps_all_clickable_actions_onto_two_rows():
+    async def no_providers():
+        return []
+
+    app = FuelGaugeApp(interval=3600, fetcher=no_providers)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        footer = app.query_one(ResponsiveFooter)
+        assert len(footer.children) == 6
+        assert not footer.has_class("-wrapped")
+        assert len({child.region.y for child in footer.children}) == 1
+
+        await pilot.resize_terminal(50, 24)
+        await pilot.pause()
+        assert footer.has_class("-wrapped")
+        assert footer.size.height == 2
+        assert len(footer.children) == 6
+        assert len({child.region.y for child in footer.children}) == 2
 
 
 def test_detailed_history_viewport_focuses_the_recorded_tail():
@@ -188,9 +239,27 @@ def test_detailed_history_viewport_focuses_the_recorded_tail():
 
     opened = reset.timestamp() - ONE_WEEK
     assert x_min > opened + 6 * 86_400
-    assert x_max == reset.timestamp()
+    assert NOW.timestamp() < x_max < reset.timestamp()
+    assert x_max - NOW.timestamp() < 10 * 60
     assert 90 < y_min < 95
-    assert y_max > 100
+    assert y_max < 100
+
+
+def test_detailed_history_viewport_crops_unrecorded_future_for_early_trace():
+    """A new Codex window should not reserve most of the graph for next week."""
+    reset = NOW + timedelta(days=6)
+    gauge = Gauge("7d", "all models", 12, reset, window_seconds=ONE_WEEK)
+    samples = [
+        {"t": (NOW - timedelta(hours=2)).timestamp(), "pct": 10.0},
+        {"t": NOW.timestamp(), "pct": 12.0},
+    ]
+
+    x_min, x_max, y_min, y_max = _history_viewport(gauge, samples, False)
+
+    assert x_min < samples[0]["t"]
+    assert NOW.timestamp() < x_max < (NOW + timedelta(hours=1)).timestamp()
+    assert reset.timestamp() - x_max > 5 * 86_400
+    assert 0 < y_min < y_max < 20
 
 
 def test_full_history_viewport_retains_the_original_context():
@@ -261,6 +330,17 @@ async def test_history_key_switches_views_and_mounts_provider_plots(
 
         assert plots.display is True
         assert app.query_one("#panels").display is False
+        history_legend = app.query_one(HistoryLegend)
+        assert history_legend.display is True
+        legend_text = history_legend.render().plain
+        for meaning in (
+            "normal usage",
+            "warning usage",
+            "critical usage",
+            "ideal budget pace",
+            "required path to 100% at reset",
+        ):
+            assert meaning in legend_text
         assert len(app.query(ProviderHistory)) == 2
         assert len(app.query(UsageHistoryPlot)) == 2
         rates = app.query(".history-rate")
@@ -283,6 +363,7 @@ async def test_history_key_switches_views_and_mounts_provider_plots(
         await pilot.pause()
         assert plots.display is False
         assert app.query_one("#panels").display is True
+        assert history_legend.display is False
 
 
 async def test_history_readout_chains_regimes_and_judges_only_the_latest(

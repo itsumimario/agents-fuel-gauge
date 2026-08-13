@@ -17,6 +17,26 @@ Screen {
     scrollbar-size-vertical: 1;
 }
 
+#history-legend {
+    height: auto;
+    padding: 0 2;
+    margin: 0 1;
+}
+
+/* Textual's stock footer scrolls horizontally. AFG keeps all six actions in
+   sight instead: natural-width grid cells on one row, then three per row once
+   their real rendered labels no longer fit. */
+ResponsiveFooter {
+    layout: grid;
+    grid-columns: auto;
+    grid-rows: 1;
+    overflow-x: hidden;
+}
+
+ResponsiveFooter.-wrapped {
+    height: 2;
+}
+
 /* Sits under both panels. `height: auto` lets it wrap to two or three lines on
    a narrow terminal instead of being cropped — vertical space is cheap here,
    horizontal space is not. */

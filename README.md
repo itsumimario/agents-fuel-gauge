@@ -41,7 +41,9 @@ curl -LsSf https://raw.githubusercontent.com/itsumimario/agents-fuel-gauge/main/
 ```
 
 That's it. It brings its own Python toolchain, installs into an isolated
-environment, and puts `afg` on your `PATH`. No sudo, nothing system-wide.
+environment, installs AFG's declared runtime dependencies (including Textual
+and plotext), and puts `afg` on your `PATH`. No pnpm, sudo, separate dependency
+installs, or system-wide packages are required.
 
 Then:
 
@@ -81,7 +83,8 @@ uv tool install git+https://github.com/itsumimario/agents-fuel-gauge.git
   Rate chunks summarize stretches of steady percent-tick movement, so a new
   pace stays visible beside the old one. Only the latest chunk gets an arrow:
   older chunks are context, not behavior you can still change. The default
-  view zooms to the recorded tail; `z` restores the complete quota window.
+  view zooms to the interval actually recorded; `z` restores the complete quota
+  window.
 - **One-shot from the command line.** `afg --check` prints once and exits, for
   scripts, prompts, cron, and CI.
 - **A tiny JSON service for anything else.** `afg --json` gives other tools a
@@ -150,22 +153,31 @@ fetched independently and one can go stale while the other keeps refreshing.
 | Key | Action |
 | --- | ------ |
 | `r` | refresh now |
-| `t` | toggle light/dark |
+| `t` | switch to `Light` or `Dark` (the button names the destination) |
 | `h` | toggle quota bars/history plots |
 | `z` | toggle detailed/full history range |
+| `o` | open `Options` |
 | `q` | quit |
 
 Refreshes every 60s (`-i` to change, 15s minimum). A failed refresh never
 blanks a panel — the last known numbers stay up behind a warning.
+At phone widths the clickable key buttons wrap onto a second row instead of
+scrolling off-screen.
 
 The history view plots the gauge under the most pace pressure for each
 provider. Its display-only rate chunks group stretches of steady percent-tick
 movement; only the latest chunk gets a verdict against the rate required from
-here. It opens in a phone-friendly detailed range: just before the first
-recorded sample through the reset, with the percentage scale fitted to the
-lines that are actually visible. Press `z` for the original 0–100%, whole-window
-context and again to return to detail. The versioned pace advice continues to
-use the whole-window average, so changing the chart range changes no directive.
+here. It opens in a phone-friendly detailed range around the samples that have
+actually been recorded, with a little padding on both sides and the percentage
+scale fitted to the visible lines. This avoids spending most of the graph on
+either unrecorded days before the trace or future days that have not happened.
+Press `z` for the original 0–100%, whole-window context and again to return to
+detail.
+
+The graph legend decodes the solid usage trace (green normal, yellow warning,
+red critical), the dim gray ideal-budget line, and the green dotted path needed
+to reach 100% at reset. The versioned pace advice continues to use the
+whole-window average, so changing the chart range changes no directive.
 
 ### One-shot: `--check`
 
