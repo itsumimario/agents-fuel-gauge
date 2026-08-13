@@ -161,12 +161,16 @@ plan label yields first and the age becomes compact before the account yields.
 | --- | ------ |
 | `r` | refresh now |
 | `t` | switch to `Light` or `Dark` (the button names the destination) |
-| `h` | toggle quota bars/history plots |
-| `z` | toggle Recorded/Full history range (shown in history overview only) |
-| `m` | cycle each provider through its recorded meters (shown when available) |
-| `d` | switch between Details and Overview (shown in history only) |
+| `h` | open `History`, then return to `Gauges` |
+| `z` | open `Full range`, then return to `Recorded range` (Overview only) |
+| `m` | choose the `Next meter` recorded for each provider (History only) |
+| `d` | open `Segments`, then return to `Overview` (History only) |
 | `o` | open `Options` |
 | `q` | quit |
+
+The footer always names the destination of a key press. In History, the panel
+border and subtitle name the currently selected provider, meter, range, and
+layout.
 
 Refreshes every 60s (`-i` to change, 15s minimum). Automatic polls respect a
 provider-requested rate-limit backoff. `r` is an explicit live probe: it
@@ -179,45 +183,47 @@ scrolling off-screen.
 
 #### History at a glance
 
-- **History (`h`)** replaces the quota bars with one recorded meter per
-  provider, initially AFG's current most-pressured meter. Press **Meter (`m`)**
-  to cycle through every gauge with drawable samples, including a 7d series
-  that is currently `too new` or does not govern. The selected meter survives
-  refreshes and Recorded/Full/Details changes. The solid line is observed
-  usage; the gray diagonal is an even budget pace; the dotted line is the pace
-  needed from the latest sample to reach 100% exactly at reset. The rate
-  readout beneath the plot summarizes changes in how quickly usage was rising;
-  only its latest rate gets an advice arrow, because older rates are context
-  rather than behavior you can change.
-- **Zoom (`z`)** switches the overview between **Recorded**, which enlarges the
-  part AFG has actually observed, and **Full**, which restores the entire quota
-  window from 0–100%. It changes only the viewport, never the usage data or
-  advice.
-- **Details (`d`)** slices the trace at transitions between sustained linear
-  and variable behavior, then shows up to five resulting portions as separate,
-  newest-first plots. Each gets its own scale, time range, percentage change,
-  duration, and daily rate. Press `d` again for **Overview**.
+- **History / Gauges (`h`) changes the screen.** History replaces the live
+  quota bars with graphs; Gauges returns to the bars.
+- **Next meter (`m`) changes the data series.** It advances each provider from
+  its selected quota to the next one with drawable samples: for example,
+  Claude 5h all models → Claude 7d all models → Claude 7d Fable. Every
+  graph border names its selected provider and meter, and the selection
+  survives refreshes and view changes.
+- **Full range / Recorded range (`z`) changes the framing.** Recorded range
+  enlarges the observed part of the selected meter. Full range restores that
+  meter's entire quota window from 0–100%. The data itself does not change.
+- **Segments / Overview (`d`) changes the layout.** Overview shows one graph
+  for the selected meter. Segments slices the same trace at transitions between
+  sustained linear and variable behavior and shows up to five resulting
+  portions as separate, newest-first graphs.
 
-#### Recorded and Full overview
+The solid line is observed usage; the gray diagonal is an even budget pace;
+the dotted line is the pace needed from the latest sample to reach 100% exactly
+at reset. The rate readout beneath an Overview graph summarizes changes in how
+quickly usage was rising. Only its latest rate gets an advice arrow, because
+older rates are context rather than behavior you can change.
 
-History opens in the phone-friendly **Recorded** range around samples that
+#### Recorded range and Full range
+
+History opens in the phone-friendly **Recorded range** around samples that
 actually exist, with a little padding and the percentage scale fitted to the
 visible lines. This avoids spending most of the graph on either unrecorded days
 before the trace or future days that have not happened. Press `z` for the
-0–100%, whole-window **Full** context and again to return to Recorded.
+0–100%, whole-window **Full range** and again to return to Recorded range.
 
 <table>
   <tr>
-    <th>Recorded — the useful observed interval</th>
-    <th>Full — the complete quota window</th>
+    <th>Recorded range — the useful observed interval</th>
+    <th>Full range — the complete quota window</th>
   </tr>
   <tr>
-    <td><img alt="Recorded history view tightly framing the synthetic Claude usage trace" src="docs/history-recorded-dark.png"></td>
-    <td><img alt="Full history view showing the same synthetic Claude trace in its complete quota window" src="docs/history-full-dark.png"></td>
+    <td><img alt="Recorded range tightly framing the synthetic Claude usage trace" src="docs/history-recorded-dark.png"></td>
+    <td><img alt="Full range showing the same synthetic Claude trace in its complete quota window" src="docs/history-full-dark.png"></td>
   </tr>
 </table>
 
-#### Details
+#### Segments
 
 Press `d` when the overview compresses a meaningful pace change too tightly.
 AFG treats sustained straight portions as delimiters and keeps the changing
@@ -227,18 +233,18 @@ readable on a narrow screen instead of being flattened into an average. Linear
 portions show a fitted rate and gray fit line; variable portions show only the
 observed shape and label its end-to-end rate as an average. If there is not
 enough history to classify the shape yet, AFG says so instead of inventing a
-portion. In Details, `z` is hidden because the portion plots already own their
+portion. In Segments, `z` is hidden because the portion plots already own their
 viewports.
 
 <p align="center">
-  <img alt="Details history view showing five newest-first linear and variable portions of the synthetic Claude trace" src="docs/history-details-dark.png" width="900">
+  <img alt="Segments history view showing five newest-first linear and variable portions of the synthetic Claude trace" src="docs/history-details-dark.png" width="900">
 </p>
 
-<p align="center"><sub>Recorded, Full, and Details all show the same deterministic synthetic Claude trace; no account history is read.</sub></p>
+<p align="center"><sub>Recorded range, Full range, and Segments all show the same deterministic synthetic Claude trace; no account history is read.</sub></p>
 
 The graph legend decodes the solid usage trace (green normal, orange warning,
 red critical), the dim gray ideal-budget line, and the green dotted path needed
-to reach 100% at reset. In Details, a gray line instead marks the fit for a
+to reach 100% at reset. In Segments, a gray line instead marks the fit for a
 linear portion; variable portions deliberately have no straight fit line.
 Pace advice continues to use the whole-window average, so changing the chart
 range or mode changes no directive.

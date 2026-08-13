@@ -38,7 +38,7 @@ OUT = REPO / "docs"
 # image reads as content the reader is missing rather than as a live control.
 SIZE = (96, 22)
 HISTORY_SIZE = (96, 34)
-DETAILS_SIZE = (96, 76)
+SEGMENTS_SIZE = (96, 76)
 
 # Verified to cover U+2588 U+2591 U+256D U+2193 U+2191 on a stock Linux font set.
 RASTER_FONT = "DejaVu Sans Mono"
@@ -111,10 +111,11 @@ def synthetic_history():
     """History shaped for documentation, keyed like the production journal."""
     snapshots = demo_snapshots()
     generated = {
-        ("claude", "7d Fable"): synthetic_series(
+        ("claude", gauge.label): synthetic_series(
             snapshots[0].captured_at.timestamp(),
-            snapshots[0].gauges[-1].percent,
-        ),
+            gauge.percent,
+        )
+        for gauge in snapshots[0].gauges
     }
     portions = history.episodes(generated[("claude", "7d Fable")])
     if [portion.linear for portion in portions] != [
@@ -141,7 +142,7 @@ async def shoot(
 
     async def fetch_synthetic():
         # Every history screenshot follows this same provider and sample set,
-        # so Recorded, Full, and Details are directly comparable.
+        # so Recorded range, Full range, and Segments are directly comparable.
         return snapshots[:1]
 
     original_read_window = history.read_window
@@ -167,7 +168,7 @@ async def shoot(
             if view == "full":
                 await pilot.press("z")
                 await pilot.pause()
-            elif view == "details":
+            elif view == "segments":
                 await pilot.press("d")
                 await pilot.pause()
             svg = app.export_screenshot(title="agents-fuel-gauge")
@@ -204,7 +205,7 @@ async def main() -> None:
     for stem, view, size in (
         ("history-recorded-dark", "recorded", HISTORY_SIZE),
         ("history-full-dark", "full", HISTORY_SIZE),
-        ("history-details-dark", "details", DETAILS_SIZE),
+        ("history-details-dark", "segments", SEGMENTS_SIZE),
     ):
         rasterise(
             await shoot(
