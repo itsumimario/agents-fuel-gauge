@@ -162,10 +162,12 @@ plan label yields first and the age becomes compact before the account yields.
 | `o` | open `Options` |
 | `q` | quit |
 
-Refreshes every 60s (`-i` to change, 15s minimum). `r` bypasses AFG's normal
-one-minute cache, but respects a provider-requested rate-limit backoff. A
-failed refresh never blanks a panel — the last known numbers stay up behind a
-warning that explains the failure and, for rate limits, when AFG will retry.
+Refreshes every 60s (`-i` to change, 15s minimum). Automatic polls respect a
+provider-requested rate-limit backoff. `r` is an explicit live probe: it
+bypasses both AFG's one-minute response cache and a persisted backoff that may
+have become obsolete. If the provider still returns 429, AFG records the new
+deadline and keeps the last known numbers behind a warning that explains the
+failure and when automatic polling will retry.
 At phone widths the clickable key buttons wrap onto a second row instead of
 scrolling off-screen.
 

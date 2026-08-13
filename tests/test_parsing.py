@@ -48,12 +48,51 @@ async def test_cached_get_explains_stale_data_during_backoff(monkeypatch):
     )
 
     payload, age, warning = await _cached_get(
-        _NoRequestClient(), "claude", "https://example.invalid", {}, 0
+        _NoRequestClient(), "claude", "https://example.invalid", {}, 60
     )
 
     assert payload == {"usage": 42}
     assert age == 3_601
     assert warning == "rate limited — retrying in 125s"
+
+
+async def test_forced_refresh_probes_past_a_stale_backoff(monkeypatch):
+    stored = []
+
+    class LiveResponse:
+        status_code = 200
+        headers = {}
+
+        @staticmethod
+        def json():
+            return {"usage": 0}
+
+    class LiveClient:
+        calls = 0
+
+        async def get(self, *args, **kwargs):
+            self.calls += 1
+            return LiveResponse()
+
+    monkeypatch.setattr(
+        "agents_fuel_gauge.sources.cache.load", lambda *args: (None, 90)
+    )
+    monkeypatch.setattr(
+        "agents_fuel_gauge.sources.cache.blocked_for", lambda *args: 125.9
+    )
+    monkeypatch.setattr(
+        "agents_fuel_gauge.sources.cache.store",
+        lambda provider, payload: stored.append((provider, payload)),
+    )
+    client = LiveClient()
+
+    payload, age, warning = await _cached_get(
+        client, "claude", "https://example.invalid", {}, 0
+    )
+
+    assert client.calls == 1
+    assert (payload, age, warning) == ({"usage": 0}, 0.0, None)
+    assert stored == [("claude", {"usage": 0})]
 
 # Trimmed from a live GET /api/oauth/usage response.
 CLAUDE_PAYLOAD = {

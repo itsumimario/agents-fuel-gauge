@@ -3,6 +3,15 @@
 Notable user-facing changes to agents-fuel-gauge are recorded here. Releases
 before 0.8.0 were documented in the Git commit history.
 
+## 0.11.1 - 2026-08-13
+
+### Fixed
+
+- An explicit `r` refresh now makes one live probe even when AFG has a stored
+  provider backoff. Automatic polls still honor that backoff, and another 429
+  replaces its deadline. This prevents a recovered provider from remaining
+  stale merely because a different client observed the recovery first.
+
 ## 0.11.0 - 2026-08-13
 
 ### Changed

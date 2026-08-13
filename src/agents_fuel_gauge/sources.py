@@ -105,10 +105,13 @@ async def _cached_get(
         age = 0.0 if max_age <= 0 else cache.load_stale(provider)[1]
         return fresh, age, None
 
-    # Never knock on a door the server has explicitly closed. Retrying inside
-    # the backoff is what turns a single 429 into a continuous stream of them.
+    # Automatic polls never knock on a door the server has explicitly closed.
+    # An explicit forced refresh is different: another client may already have
+    # proved the provider recovered, and a persisted deadline cannot observe
+    # that. Let the one user-requested probe through; a repeated 429 replaces
+    # the deadline and still protects every subsequent automatic poll.
     waiting = cache.blocked_for(provider)
-    if waiting > 0:
+    if waiting > 0 and max_age > 0:
         stale, age = cache.load_stale(provider)
         if stale is not None:
             return stale, age, f"rate limited — retrying in {int(waiting)}s"
