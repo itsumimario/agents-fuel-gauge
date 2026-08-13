@@ -200,10 +200,14 @@ async def test_no_installed_providers_gets_one_generic_empty_state():
 
 def test_history_navigation_bindings_are_registered_for_the_footer():
     """Discoverability matters for a pane with no always-visible tab."""
-    assert ("h", "toggle_history", "History") in FuelGaugeApp.BINDINGS
-    assert ("z", "toggle_history_zoom", "Zoom") in FuelGaugeApp.BINDINGS
-    assert ("m", "cycle_history_meter", "Meter") in FuelGaugeApp.BINDINGS
-    assert ("d", "set_history_mode('details')", "Details") in FuelGaugeApp.BINDINGS
+    assert ("h", "set_dashboard_view('history')", "History") in FuelGaugeApp.BINDINGS
+    assert ("h", "set_dashboard_view('gauges')", "Gauges") in FuelGaugeApp.BINDINGS
+    assert ("z", "set_history_range('full')", "Full range") in FuelGaugeApp.BINDINGS
+    assert (
+        "z", "set_history_range('recorded')", "Recorded range"
+    ) in FuelGaugeApp.BINDINGS
+    assert ("m", "cycle_history_meter", "Next meter") in FuelGaugeApp.BINDINGS
+    assert ("d", "set_history_mode('segments')", "Segments") in FuelGaugeApp.BINDINGS
     assert ("d", "set_history_mode('overview')", "Overview") in FuelGaugeApp.BINDINGS
     assert ("o", "command_palette", "Options") in FuelGaugeApp.BINDINGS
     assert not any(key == "p" for key, _, _ in FuelGaugeApp.BINDINGS)
@@ -245,7 +249,7 @@ async def test_footer_wraps_all_clickable_actions_onto_two_rows():
         await pilot.pause()
         footer = app.query_one(ResponsiveFooter)
         assert len(footer.children) == 5
-        assert all("Zoom" not in child.render().plain for child in footer.children)
+        assert all("Full range" not in child.render().plain for child in footer.children)
         assert not footer.has_class("-wrapped")
         assert len({child.region.y for child in footer.children}) == 1
 
@@ -370,17 +374,19 @@ async def test_history_key_switches_views_and_mounts_provider_plots(
         plots = app.query_one("#plots")
         footer = app.query_one(ResponsiveFooter)
         assert plots.display is False
+        assert app.active_bindings["h"].binding.description == "History"
         assert "z" not in app.active_bindings
         assert "d" not in app.active_bindings
-        assert all("Zoom" not in child.render().plain for child in footer.children)
+        assert all("Full range" not in child.render().plain for child in footer.children)
 
         await pilot.press("h")
         await pilot.pause()
 
         assert plots.display is True
-        assert app.active_bindings["z"].binding.description == "Zoom"
-        assert app.active_bindings["d"].binding.description == "Details"
-        assert any("Zoom" in child.render().plain for child in footer.children)
+        assert app.active_bindings["h"].binding.description == "Gauges"
+        assert app.active_bindings["z"].binding.description == "Full range"
+        assert app.active_bindings["d"].binding.description == "Segments"
+        assert any("Full range" in child.render().plain for child in footer.children)
         assert app.query_one("#panels").display is False
         history_legend = app.query_one(HistoryLegend)
         assert history_legend.display is True
@@ -402,12 +408,17 @@ async def test_history_key_switches_views_and_mounts_provider_plots(
         )
 
         histories = list(app.query(ProviderHistory))
-        assert all(item.border_subtitle == "recorded" for item in histories)
+        assert all(item.border_subtitle == "Recorded range" for item in histories)
+        assert all(
+            item.border_title == f"{item.snapshot.display_name} — {item.gauge.label}"
+            for item in histories
+        )
         await pilot.press("z")
         await pilot.pause()
         assert app.history_full_window is True
+        assert app.active_bindings["z"].binding.description == "Recorded range"
         assert all(
-            item.border_subtitle == "full window"
+            item.border_subtitle == "Full range"
             for item in app.query(ProviderHistory)
         )
 
@@ -418,7 +429,7 @@ async def test_history_key_switches_views_and_mounts_provider_plots(
         assert app.active_bindings["d"].binding.description == "Overview"
         assert not app.query(UsageHistoryPlot)
         assert all(
-            "not enough history to classify details"
+            "not enough history to classify segments"
             in item.render().plain
             for item in app.query(".history-empty")
         )
@@ -426,10 +437,11 @@ async def test_history_key_switches_views_and_mounts_provider_plots(
         await pilot.press("d")
         await pilot.pause()
         assert app.history_details is False
-        assert app.active_bindings["d"].binding.description == "Details"
+        assert app.active_bindings["d"].binding.description == "Segments"
+        assert app.active_bindings["z"].binding.description == "Recorded range"
         assert "z" in app.active_bindings
         assert all(
-            item.border_subtitle == "full window"
+            item.border_subtitle == "Full range"
             for item in app.query(ProviderHistory)
         )
 
@@ -438,9 +450,10 @@ async def test_history_key_switches_views_and_mounts_provider_plots(
         assert plots.display is False
         assert app.query_one("#panels").display is True
         assert history_legend.display is False
+        assert app.active_bindings["h"].binding.description == "History"
         assert "z" not in app.active_bindings
         assert "d" not in app.active_bindings
-        assert all("Zoom" not in child.render().plain for child in footer.children)
+        assert all("Full range" not in child.render().plain for child in footer.children)
 
 
 async def test_history_meter_key_cycles_every_recorded_claude_gauge(
@@ -450,13 +463,21 @@ async def test_history_meter_key_cycles_every_recorded_claude_gauge(
     monkeypatch.setattr(history, "read_window", lambda *args: samples)
     app = FuelGaugeApp(interval=3600)
 
-    async with app.run_test(size=(100, 36)) as pilot:
+    async with app.run_test(size=(42, 36)) as pilot:
         await pilot.pause()
         assert "m" not in app.active_bindings
         await pilot.press("h")
         await pilot.pause()
 
-        assert app.active_bindings["m"].binding.description == "Meter"
+        assert app.active_bindings["m"].binding.description == "Next meter"
+        footer = app.query_one(ResponsiveFooter)
+        footer_text = " ".join(child.render().plain for child in footer.children)
+        assert footer.has_class("-wrapped")
+        assert footer.size.height == 2
+        for destination in (
+            "Gauges", "Full range", "Next meter", "Segments",
+        ):
+            assert destination in footer_text
 
         def selected_claude_label():
             return next(
@@ -477,6 +498,12 @@ async def test_history_meter_key_cycles_every_recorded_claude_gauge(
             "7d all models",
             "7d Fable",
         ]
+        claude = next(
+            panel
+            for panel in app.query(ProviderHistory)
+            if panel.snapshot.key == "claude"
+        )
+        assert claude.border_title == "Claude — 7d Fable"
 
 
 async def test_details_stacks_shape_portions_newest_first(monkeypatch):
@@ -522,7 +549,7 @@ async def test_details_stacks_shape_portions_newest_first(monkeypatch):
         assert "average" in summaries[1]
         assert "variable" in cards[1].query_one(UsageHistoryPlot).segment_label
         assert "over" in summaries[0]
-        assert app.query_one(ProviderHistory).border_subtitle == "details · 3 portions"
+        assert app.query_one(ProviderHistory).border_subtitle == "Segments · 3 portions"
         assert app.active_bindings["d"].binding.description == "Overview"
         assert "z" not in app.active_bindings
         legend = app.query_one(HistoryLegend).render().plain
@@ -634,12 +661,12 @@ async def test_both_history_ranges_render_at_phone_width(monkeypatch):
         await pilot.pause()
         await pilot.press("h")
         await pilot.pause()
-        assert app.query_one(ProviderHistory).border_subtitle == "recorded"
+        assert app.query_one(ProviderHistory).border_subtitle == "Recorded range"
         assert "<svg" in app.export_screenshot()
 
         await pilot.press("z")
         await pilot.pause()
-        assert app.query_one(ProviderHistory).border_subtitle == "full window"
+        assert app.query_one(ProviderHistory).border_subtitle == "Full range"
         assert "<svg" in app.export_screenshot()
 
 

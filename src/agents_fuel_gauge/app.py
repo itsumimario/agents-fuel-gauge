@@ -721,9 +721,9 @@ class UsageHistoryPlot(PlotextPlot):
         self.plt.ylim(y_min, y_max)
         self.plt.grid(horizontal=True, vertical=False)
         if self.segment is None:
-            self.plt.title(f"{gauge.label} · {gauge.percent:.0f}%")
+            self.plt.title(f"Usage · {gauge.percent:.0f}%")
         else:
-            self.plt.title(f"{self.segment_label} · {gauge.label}")
+            self.plt.title(self.segment_label)
 
 
 class HistorySegment(Vertical):
@@ -808,7 +808,7 @@ class ProviderHistory(Vertical):
         if self.details:
             if not self.portions:
                 yield Static(
-                    "not enough history to classify details yet",
+                    "not enough history to classify segments yet",
                     classes="history-empty",
                 )
                 return
@@ -843,12 +843,16 @@ class ProviderHistory(Vertical):
 
     def on_mount(self) -> None:
         self.border_title = self.snapshot.display_name
+        if self.gauge is not None:
+            self.border_title += f" — {self.gauge.label}"
         if self.details:
             count = len(self.portions)
             plural = "s" if count != 1 else ""
-            self.border_subtitle = f"details · {count} portion{plural}"
+            self.border_subtitle = f"Segments · {count} portion{plural}"
         else:
-            self.border_subtitle = "full window" if self.full_window else "recorded"
+            self.border_subtitle = (
+                "Full range" if self.full_window else "Recorded range"
+            )
 
 
 class FuelGaugeApp(App):
@@ -863,10 +867,12 @@ class FuelGaugeApp(App):
         ("r", "refresh_now", "Refresh"),
         ("t", "set_theme('textual-light')", "Light"),
         ("t", "set_theme('textual-dark')", "Dark"),
-        ("h", "toggle_history", "History"),
-        ("z", "toggle_history_zoom", "Zoom"),
-        ("m", "cycle_history_meter", "Meter"),
-        ("d", "set_history_mode('details')", "Details"),
+        ("h", "set_dashboard_view('history')", "History"),
+        ("h", "set_dashboard_view('gauges')", "Gauges"),
+        ("z", "set_history_range('full')", "Full range"),
+        ("z", "set_history_range('recorded')", "Recorded range"),
+        ("m", "cycle_history_meter", "Next meter"),
+        ("d", "set_history_mode('segments')", "Segments"),
         ("d", "set_history_mode('overview')", "Overview"),
         ("o", "command_palette", "Options"),
     ]
@@ -1075,10 +1081,10 @@ class FuelGaugeApp(App):
         self.history_gauge_labels[snapshot.key] = gauge.label
         return gauge
 
-    async def action_toggle_history(self) -> None:
+    async def action_set_dashboard_view(self, view: str) -> None:
         if not self.snapshots:
             return
-        self.showing_history = not self.showing_history
+        self.showing_history = view == "history"
         self.refresh_bindings()
         self.query_one("#panels", VerticalScroll).display = not self.showing_history
         self.query_one(Legend).display = not self.showing_history
@@ -1087,10 +1093,11 @@ class FuelGaugeApp(App):
         if self.showing_history:
             await self._refresh_plots()
 
-    async def action_toggle_history_zoom(self) -> None:
+    async def action_set_history_range(self, range_name: str) -> None:
         if not self.showing_history or self.history_details or not self.snapshots:
             return
-        self.history_full_window = not self.history_full_window
+        self.history_full_window = range_name == "full"
+        self.refresh_bindings()
         await self._refresh_plots()
 
     async def action_cycle_history_meter(self) -> None:
@@ -1120,7 +1127,7 @@ class FuelGaugeApp(App):
     async def action_set_history_mode(self, mode: str) -> None:
         if not self.showing_history or not self.snapshots:
             return
-        self.history_details = mode == "details"
+        self.history_details = mode == "segments"
         self.refresh_bindings()
         self.query_one(HistoryLegend).refresh()
         await self._refresh_plots()
@@ -1128,11 +1135,16 @@ class FuelGaugeApp(App):
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         if action == "set_theme" and parameters:
             return self.theme != parameters[0]
-        if action == "toggle_history_zoom":
+        if action == "set_dashboard_view" and parameters:
+            requested_history = parameters[0] == "history"
+            return requested_history != self.showing_history
+        if action == "set_history_range" and parameters:
+            requested_full = parameters[0] == "full"
             return (
                 self.showing_history
                 and not self.history_details
                 and bool(self.snapshots)
+                and requested_full != self.history_full_window
             )
         if action == "cycle_history_meter":
             return (
@@ -1143,7 +1155,7 @@ class FuelGaugeApp(App):
                 )
             )
         if action == "set_history_mode" and parameters:
-            requested_details = parameters[0] == "details"
+            requested_details = parameters[0] == "segments"
             return (
                 self.showing_history
                 and bool(self.snapshots)
