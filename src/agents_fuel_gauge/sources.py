@@ -92,16 +92,18 @@ async def _cached_get(
     url: str,
     headers: dict,
     max_age: float,
-) -> tuple[dict, float]:
+) -> tuple[dict, float, str | None]:
     """Fetch through the cache, honouring any standing backoff.
 
-    Returns (payload, age_seconds). Age is 0 for a live response, and non-zero
-    when the payload came from disk — the caller uses that to mark the reading
-    as stale rather than passing off an old number as current.
+    Returns (payload, age_seconds, warning). Age is 0 for a live response, and
+    non-zero when the payload came from disk. A warning accompanies stale data
+    served because a live request could not be made, so callers never pass off
+    a rate-limited or offline reading as merely cached.
     """
     fresh, _ = cache.load(provider, max_age)
     if fresh is not None:
-        return fresh, 0.0 if max_age <= 0 else cache.load_stale(provider)[1]
+        age = 0.0 if max_age <= 0 else cache.load_stale(provider)[1]
+        return fresh, age, None
 
     # Never knock on a door the server has explicitly closed. Retrying inside
     # the backoff is what turns a single 429 into a continuous stream of them.
@@ -109,32 +111,39 @@ async def _cached_get(
     if waiting > 0:
         stale, age = cache.load_stale(provider)
         if stale is not None:
-            return stale, age
+            return stale, age, f"rate limited — retrying in {int(waiting)}s"
         raise RateLimited(
             f"rate limited — retrying in {int(waiting)}s", retry_after=waiting
         )
 
     try:
         response = await client.get(url, headers=headers)
-    except httpx.HTTPError:
+    except httpx.HTTPError as exc:
         stale, age = cache.load_stale(provider)
         if stale is not None:
-            return stale, age
+            return stale, age, f"network error: {exc.__class__.__name__}"
         raise
 
     if response.status_code == 429:
         retry = response.headers.get("retry-after")
         seconds = float(retry) if (retry or "").replace(".", "", 1).isdigit() else None
         cache.block(provider, seconds)
+        waiting = cache.blocked_for(provider)
         stale, age = cache.load_stale(provider)
         if stale is not None:
-            return stale, age
-        suffix = f" — retrying in {int(seconds)}s" if seconds else ""
-        raise RateLimited(f"rate limited (429){suffix}", retry_after=seconds)
+            return (
+                stale,
+                age,
+                f"rate limited (429) — retrying in {int(waiting)}s",
+            )
+        raise RateLimited(
+            f"rate limited (429) — retrying in {int(waiting)}s",
+            retry_after=waiting,
+        )
 
     payload = _raise_for_status(response, provider)
     cache.store(provider, payload)
-    return payload, 0.0
+    return payload, 0.0, None
 
 
 def tidy_path(path: Path) -> str:
@@ -353,20 +362,21 @@ async def fetch_claude(
             "anthropic-beta": CLAUDE_BETA,
             "Content-Type": "application/json",
         }
-        usage, age = await _cached_get(
+        usage, age, warning = await _cached_get(
             client, "claude", CLAUDE_USAGE_URL, headers, max_age
         )
         snapshot.gauges = _claude_gauges(usage)
         if age:
             snapshot.stale = True
             snapshot.captured_at = datetime.now(timezone.utc) - timedelta(seconds=age)
+        snapshot.error = warning
         snapshot.plan = _plan_from_tier(creds.get("rateLimitTier"))
 
         # The account label is a nicety; never let it fail the whole panel.
         try:
             # The profile is effectively static; cache it hard so it never
             # costs a request that the usage endpoint needs.
-            profile, _ = await _cached_get(
+            profile, _, _ = await _cached_get(
                 client, "claude-profile", CLAUDE_PROFILE_URL, headers, 86_400
             )
             account = profile.get("account") or {}
@@ -455,13 +465,14 @@ async def fetch_codex(
         if tokens.get("account_id"):
             headers["chatgpt-account-id"] = tokens["account_id"]
 
-        usage, age = await _cached_get(
+        usage, age, warning = await _cached_get(
             client, "codex", CODEX_USAGE_URL, headers, max_age
         )
         snapshot.gauges = _codex_gauges(usage)
         if age:
             snapshot.stale = True
             snapshot.captured_at = datetime.now(timezone.utc) - timedelta(seconds=age)
+        snapshot.error = warning
         snapshot.plan = _codex_plan_name(usage.get("plan_type"))
         snapshot.account = mask_email(usage.get("email"))
     except SourceError as exc:

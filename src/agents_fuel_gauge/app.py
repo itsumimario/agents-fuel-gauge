@@ -860,6 +860,7 @@ class FuelGaugeApp(App):
         # data without the network. Resolved here, not at import, so tests can
         # still monkeypatch the module-level fetch_all.
         self.fetcher = fetcher or fetch_all
+        self.refresh_fetcher = fetcher or (lambda: fetch_all(0))
         self.snapshots: list[ProviderSnapshot] = []
         self.showing_history = False
         self.history_full_window = False
@@ -917,9 +918,10 @@ class FuelGaugeApp(App):
         for panel in self.query(ProviderPanel):
             panel.refresh_titles()  # keeps each panel's "12s ago" honest
 
-    async def poll(self) -> None:
+    async def poll(self, *, force: bool = False) -> None:
         try:
-            fetched = await self.fetcher()
+            fetcher = self.refresh_fetcher if force else self.fetcher
+            fetched = await fetcher()
         except Exception as exc:  # never let a poll kill the app
             self.sub_title = f"fetch failed: {exc.__class__.__name__}"
             return
@@ -992,7 +994,7 @@ class FuelGaugeApp(App):
 
     async def action_refresh_now(self) -> None:
         self.sub_title = "refreshing…"
-        await self.poll()
+        await self.poll(force=True)
 
     async def _refresh_plots(self) -> None:
         """Rebuild only for new data or an explicit switch to history.

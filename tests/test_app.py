@@ -110,7 +110,7 @@ def stub(monkeypatch):
     """Swap the network call for a controllable fake."""
     state = {"snapshots": _snapshots()}
 
-    async def fake_fetch_all():
+    async def fake_fetch_all(max_age=60.0):
         return state["snapshots"]
 
     monkeypatch.setattr(app_module, "fetch_all", fake_fetch_all)
@@ -739,6 +739,23 @@ async def test_refresh_updates_in_place_without_remounting(stub):
         assert before == after, "same-shape refresh should reuse widgets"
         fable = next(b.gauge for b in app.query(GaugeBar) if b.gauge.scope == "Fable")
         assert fable.percent == 99.0
+
+
+async def test_refresh_key_bypasses_the_normal_cache(monkeypatch):
+    requested_ages = []
+
+    async def fake_fetch_all(max_age=60.0):
+        requested_ages.append(max_age)
+        return _snapshots()
+
+    monkeypatch.setattr(app_module, "fetch_all", fake_fetch_all)
+    app = FuelGaugeApp(interval=3600)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("r")
+        await pilot.pause()
+
+    assert requested_ages == [60.0, 0]
 
 
 async def test_refresh_rebuilds_when_a_scoped_limit_disappears(stub):

@@ -3,6 +3,15 @@
 Notable user-facing changes to agents-fuel-gauge are recorded here. Releases
 before 0.8.0 were documented in the Git commit history.
 
+## 0.10.2 - 2026-08-13
+
+### Fixed
+
+- The `r` key now requests live provider data instead of reusing AFG's normal
+  one-minute cache. It still honors provider-requested rate-limit backoffs.
+- Stale bars retained during a rate-limit backoff or network failure now show
+  the reason and retry timing, instead of silently appearing not to refresh.
+
 ## 0.10.1 - 2026-08-13
 
 ### Changed

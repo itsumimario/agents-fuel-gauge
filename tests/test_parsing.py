@@ -19,6 +19,7 @@ from agents_fuel_gauge.models import (
 )
 from agents_fuel_gauge.sources import (
     SourceError,
+    _cached_get,
     _claude_gauges,
     _codex_gauges,
     _codex_plan_name,
@@ -29,6 +30,30 @@ from agents_fuel_gauge.sources import (
     codex_auth_path,
     tidy_path,
 )
+
+
+class _NoRequestClient:
+    async def get(self, *args, **kwargs):
+        pytest.fail("a standing provider backoff must not make a request")
+
+
+async def test_cached_get_explains_stale_data_during_backoff(monkeypatch):
+    monkeypatch.setattr("agents_fuel_gauge.sources.cache.load", lambda *args: (None, 90))
+    monkeypatch.setattr(
+        "agents_fuel_gauge.sources.cache.load_stale",
+        lambda *args: ({"usage": 42}, 3_601),
+    )
+    monkeypatch.setattr(
+        "agents_fuel_gauge.sources.cache.blocked_for", lambda *args: 125.9
+    )
+
+    payload, age, warning = await _cached_get(
+        _NoRequestClient(), "claude", "https://example.invalid", {}, 0
+    )
+
+    assert payload == {"usage": 42}
+    assert age == 3_601
+    assert warning == "rate limited — retrying in 125s"
 
 # Trimmed from a live GET /api/oauth/usage response.
 CLAUDE_PAYLOAD = {
