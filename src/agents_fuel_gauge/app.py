@@ -122,6 +122,59 @@ def _segment_duration(seconds: float) -> str:
     return f"{seconds / 86_400:.1f}d"
 
 
+def _percent_at(samples: list[history.Sample], timestamp: float) -> float:
+    """Interpolate the integer-percent staircase at an inferred corner."""
+    points = sorted(samples, key=lambda sample: sample["t"])
+    if timestamp <= points[0]["t"]:
+        return points[0]["pct"]
+    if timestamp >= points[-1]["t"]:
+        return points[-1]["pct"]
+    for left, right in zip(points, points[1:]):
+        if left["t"] <= timestamp <= right["t"]:
+            span = right["t"] - left["t"]
+            if span <= 0:
+                return right["pct"]
+            progress = (timestamp - left["t"]) / span
+            return left["pct"] + (right["pct"] - left["pct"]) * progress
+    return points[-1]["pct"]
+
+
+def _segment_viewport(
+    samples: list[history.Sample],
+    segment: history.Segment,
+) -> tuple[float, float, float, float]:
+    """Frame one inferred regime tightly enough to be legible on a phone."""
+    points = sorted(samples, key=lambda sample: sample["t"])
+    duration = max(1.0, segment.end - segment.start)
+    padding = duration * 0.08
+    x_min = max(points[0]["t"], segment.start - padding)
+    x_max = min(points[-1]["t"], segment.end + padding)
+    if x_max <= x_min:
+        x_max = x_min + 1.0
+
+    visible = [
+        sample["pct"]
+        for sample in points
+        if x_min <= sample["t"] <= x_max
+    ]
+    fitted_start = _percent_at(points, segment.start)
+    fitted_end = fitted_start + segment.delta_pct
+    values = [*visible, fitted_start, fitted_end]
+    low = min(values)
+    high = max(values)
+    y_padding = max(0.5, (high - low) * 0.08)
+    return x_min, x_max, max(0.0, low - y_padding), high + y_padding
+
+
+def _segment_range(segment: history.Segment) -> str:
+    """A compact local-time range that still disambiguates crossed dates."""
+    start = datetime.fromtimestamp(segment.start).astimezone()
+    end = datetime.fromtimestamp(segment.end).astimezone()
+    if start.date() == end.date():
+        return f"{start:%a %H:%M}–{end:%H:%M}"
+    return f"{start:%a %H:%M}–{end:%a %H:%M}"
+
+
 def _history_viewport(
     gauge: Gauge,
     samples: list[history.Sample],
@@ -493,13 +546,21 @@ class HistoryLegend(Static):
 
     def render(self) -> Text:
         text = Text(no_wrap=False, overflow="fold")
-        for mark, style, meaning in (
+        lines = [
             ("━━", "green", "normal usage"),
             ("━━", "yellow", "warning usage"),
             ("━━", "red", "critical usage"),
-            ("━━", "dim grey70", "ideal budget pace"),
-            ("••", "green", "required path to 100% at reset"),
-        ):
+        ]
+        if getattr(self.app, "history_details", False):
+            lines.append(("━━", "dim grey70", "fitted segment rate"))
+        else:
+            lines.extend(
+                [
+                    ("━━", "dim grey70", "ideal budget pace"),
+                    ("••", "green", "required path to 100% at reset"),
+                ]
+            )
+        for mark, style, meaning in lines:
             text.append(mark, style=style)
             text.append(f" {meaning}   ", style="dim")
         return text
@@ -562,18 +623,22 @@ PLOTEXT_SEVERITY = {
 
 
 class UsageHistoryPlot(PlotextPlot):
-    """A gauge trace against the two straight lines that give it context."""
+    """A gauge trace in overview context or against one fitted segment."""
 
     def __init__(
         self,
         gauge: Gauge,
         samples: list[history.Sample],
         full_window: bool = False,
+        segment: history.Segment | None = None,
+        segment_label: str = "",
     ) -> None:
         super().__init__()
         self.gauge = gauge
         self.samples = samples
         self.full_window = full_window
+        self.segment = segment
+        self.segment_label = segment_label
 
     def on_mount(self) -> None:
         super().on_mount()
@@ -583,21 +648,34 @@ class UsageHistoryPlot(PlotextPlot):
         opened = reset - window
         xs = [sample["t"] for sample in self.samples]
         ys = [sample["pct"] for sample in self.samples]
-        x_min, x_max, y_min, y_max = _history_viewport(
-            gauge, self.samples, self.full_window
-        )
+        if self.segment is None:
+            x_min, x_max, y_min, y_max = _history_viewport(
+                gauge, self.samples, self.full_window
+            )
+        else:
+            x_min, x_max, y_min, y_max = _segment_viewport(
+                self.samples, self.segment
+            )
         midpoint = x_min + (x_max - x_min) / 2
-        ideal_at_start = (x_min - opened) / window * 100
-        ideal_at_end = (x_max - opened) / window * 100
-
-        self.plt.plot(
-            [x_min, x_max],
-            [ideal_at_start, ideal_at_end],
-            color="gray",
-            style="dim",
-        )
+        if self.segment is None:
+            ideal_at_start = (x_min - opened) / window * 100
+            ideal_at_end = (x_max - opened) / window * 100
+            self.plt.plot(
+                [x_min, x_max],
+                [ideal_at_start, ideal_at_end],
+                color="gray",
+                style="dim",
+            )
+        else:
+            fitted_start = _percent_at(self.samples, self.segment.start)
+            self.plt.plot(
+                [self.segment.start, self.segment.end],
+                [fitted_start, fitted_start + self.segment.delta_pct],
+                color="gray",
+                style="dim",
+            )
         self.plt.plot(xs, ys, color=PLOTEXT_SEVERITY.get(gauge.severity, "green"))
-        if gauge.percent < 100:
+        if self.segment is None and gauge.percent < 100:
             # Dot markers keep the chord distinguishable from the trace when a
             # normal-severity gauge makes both of them green.
             required_at_end = ys[-1] + (
@@ -629,18 +707,58 @@ class UsageHistoryPlot(PlotextPlot):
         self.plt.xlim(x_min, x_max)
         self.plt.ylim(y_min, y_max)
         self.plt.grid(horizontal=True, vertical=False)
-        self.plt.title(f"{gauge.label} · {gauge.percent:.0f}%")
+        if self.segment is None:
+            self.plt.title(f"{gauge.label} · {gauge.percent:.0f}%")
+        else:
+            self.plt.title(f"{self.segment_label} · {gauge.label}")
+
+
+class HistorySegment(Vertical):
+    """One inferred regime, independently scaled with its evidence beneath."""
+
+    def __init__(
+        self,
+        gauge: Gauge,
+        samples: list[history.Sample],
+        segment: history.Segment,
+        position: int,
+    ) -> None:
+        super().__init__(classes="history-segment")
+        self.gauge = gauge
+        self.samples = samples
+        self.segment = segment
+        self.position = position
+
+    def compose(self) -> ComposeResult:
+        label = "newest" if self.position == 0 else f"previous {self.position}"
+        yield UsageHistoryPlot(
+            self.gauge,
+            self.samples,
+            segment=self.segment,
+            segment_label=label,
+        )
+        yield Static(
+            f"{_segment_range(self.segment)} · "
+            f"{self.segment.delta_pct:+.1f}% over "
+            f"{_segment_duration(self.segment.end - self.segment.start)} · "
+            f"fitted {self.segment.rate_per_day:.1f}%/d",
+            classes="history-segment-summary",
+        )
 
 
 class ProviderHistory(Vertical):
     """The most pressured gauge for one provider, with rate-regime evidence."""
 
     def __init__(
-        self, snapshot: ProviderSnapshot, full_window: bool = False
+        self,
+        snapshot: ProviderSnapshot,
+        full_window: bool = False,
+        details: bool = False,
     ) -> None:
         super().__init__(id=f"history-{snapshot.key}")
         self.snapshot = snapshot
         self.full_window = full_window
+        self.details = details
         self.gauge = snapshot.tightest
         self.samples = (
             history.read_window(
@@ -652,6 +770,9 @@ class ProviderHistory(Vertical):
             if self.gauge is not None
             else []
         )
+        self.inferred = history.segments(self.samples)
+        if self.details:
+            self.add_class("-details")
 
     def compose(self) -> ComposeResult:
         gauge = self.gauge
@@ -667,10 +788,20 @@ class ProviderHistory(Vertical):
             )
             return
 
+        if self.details:
+            if not self.inferred:
+                yield Static(
+                    "not enough movement to split into details yet",
+                    classes="history-empty",
+                )
+                return
+            for position, segment in enumerate(reversed(self.inferred)):
+                yield HistorySegment(gauge, self.samples, segment, position)
+            return
+
         yield UsageHistoryPlot(gauge, self.samples, self.full_window)
         remaining = gauge.resets_at.timestamp() - self.samples[-1]["t"]
-        inferred = history.segments(self.samples)
-        if not inferred or remaining <= 0:
+        if not self.inferred or remaining <= 0:
             yield Static(
                 "not enough movement to infer a rate yet",
                 classes="history-rate",
@@ -681,9 +812,9 @@ class ProviderHistory(Vertical):
         chunks = [
             f"{segment.rate_per_day:.1f}%/d "
             f"({_segment_duration(segment.end - segment.start)})"
-            for segment in inferred
+            for segment in self.inferred
         ]
-        latest_rate = inferred[-1].rate_per_day
+        latest_rate = self.inferred[-1].rate_per_day
         if latest_rate > required * (1 + PACE_TOLERANCE):
             chunks[-1] += f" {PACE_ARROW['slow_down']}"
         elif latest_rate < required * (1 - PACE_TOLERANCE):
@@ -695,7 +826,12 @@ class ProviderHistory(Vertical):
 
     def on_mount(self) -> None:
         self.border_title = self.snapshot.display_name
-        self.border_subtitle = "full window" if self.full_window else "detail"
+        if self.details:
+            count = len(self.inferred)
+            plural = "s" if count != 1 else ""
+            self.border_subtitle = f"details · {count} segment{plural}"
+        else:
+            self.border_subtitle = "full window" if self.full_window else "recorded"
 
 
 class FuelGaugeApp(App):
@@ -712,6 +848,8 @@ class FuelGaugeApp(App):
         ("t", "set_theme('textual-dark')", "Dark"),
         ("h", "toggle_history", "History"),
         ("z", "toggle_history_zoom", "Zoom"),
+        ("d", "set_history_mode('details')", "Details"),
+        ("d", "set_history_mode('overview')", "Overview"),
         ("o", "command_palette", "Options"),
     ]
 
@@ -725,6 +863,7 @@ class FuelGaugeApp(App):
         self.snapshots: list[ProviderSnapshot] = []
         self.showing_history = False
         self.history_full_window = False
+        self.history_details = False
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -867,6 +1006,8 @@ class FuelGaugeApp(App):
         await plots.mount_all(
             [
                 ProviderHistory(snapshot, self.history_full_window)
+                if not self.history_details
+                else ProviderHistory(snapshot, details=True)
                 for snapshot in self.snapshots
             ]
         )
@@ -884,16 +1025,35 @@ class FuelGaugeApp(App):
             await self._refresh_plots()
 
     async def action_toggle_history_zoom(self) -> None:
-        if not self.showing_history or not self.snapshots:
+        if not self.showing_history or self.history_details or not self.snapshots:
             return
         self.history_full_window = not self.history_full_window
+        await self._refresh_plots()
+
+    async def action_set_history_mode(self, mode: str) -> None:
+        if not self.showing_history or not self.snapshots:
+            return
+        self.history_details = mode == "details"
+        self.refresh_bindings()
+        self.query_one(HistoryLegend).refresh()
         await self._refresh_plots()
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         if action == "set_theme" and parameters:
             return self.theme != parameters[0]
         if action == "toggle_history_zoom":
-            return self.showing_history and bool(self.snapshots)
+            return (
+                self.showing_history
+                and not self.history_details
+                and bool(self.snapshots)
+            )
+        if action == "set_history_mode" and parameters:
+            requested_details = parameters[0] == "details"
+            return (
+                self.showing_history
+                and bool(self.snapshots)
+                and requested_details != self.history_details
+            )
         return super().check_action(action, parameters)
 
     def action_set_theme(self, theme: str) -> None:

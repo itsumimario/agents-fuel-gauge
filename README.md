@@ -84,7 +84,7 @@ uv tool install git+https://github.com/itsumimario/agents-fuel-gauge.git
   pace stays visible beside the old one. Only the latest chunk gets an arrow:
   older chunks are context, not behavior you can still change. The default
   view zooms to the interval actually recorded; `z` restores the complete quota
-  window.
+  window, while `d` expands the inferred chunks into individually scaled plots.
 - **One-shot from the command line.** `afg --check` prints once and exits, for
   scripts, prompts, cron, and CI.
 - **A tiny JSON service for anything else.** `afg --json` gives other tools a
@@ -157,7 +157,8 @@ plan label yields first and the age becomes compact before the account yields.
 | `r` | refresh now |
 | `t` | switch to `Light` or `Dark` (the button names the destination) |
 | `h` | toggle quota bars/history plots |
-| `z` | toggle detailed/full history range (shown in history only) |
+| `z` | toggle Recorded/Full history range (shown in history overview only) |
+| `d` | switch between Details and Overview (shown in history only) |
 | `o` | open `Options` |
 | `q` | quit |
 
@@ -169,17 +170,49 @@ scrolling off-screen.
 The history view plots the gauge under the most pace pressure for each
 provider. Its display-only rate chunks group stretches of steady percent-tick
 movement; only the latest chunk gets a verdict against the rate required from
-here. It opens in a phone-friendly detailed range around the samples that have
-actually been recorded, with a little padding on both sides and the percentage
-scale fitted to the visible lines. This avoids spending most of the graph on
-either unrecorded days before the trace or future days that have not happened.
-Press `z` for the original 0–100%, whole-window context and again to return to
-detail.
+here.
+
+#### Recorded and Full overview
+
+History opens in the phone-friendly **Recorded** range around samples that
+actually exist, with a little padding and the percentage scale fitted to the
+visible lines. This avoids spending most of the graph on either unrecorded days
+before the trace or future days that have not happened. Press `z` for the
+0–100%, whole-window **Full** context and again to return to Recorded.
+
+<table>
+  <tr>
+    <th>Recorded — the useful observed interval</th>
+    <th>Full — the complete quota window</th>
+  </tr>
+  <tr>
+    <td><img alt="Recorded history view tightly framing synthetic Claude and Codex usage" src="docs/history-recorded-dark.png"></td>
+    <td><img alt="Full history view showing synthetic Claude and Codex usage in complete quota windows" src="docs/history-full-dark.png"></td>
+  </tr>
+</table>
+
+#### Details
+
+Press `d` when the overview compresses a meaningful pace change too tightly.
+**Details** uses the same rate chunks shown in the overview readout, but gives
+up to three of them their own vertically stacked plots. They are newest first
+and independently scaled, so a short correction remains readable on a narrow
+screen. Each plot states its local time range, percentage change, duration, and
+fitted daily rate. If there is not enough movement to infer a segment yet, AFG
+says so instead of inventing one. In Details, `d` becomes **Overview** and `z`
+is hidden because the segment plots already own their viewports.
+
+<p align="center">
+  <img alt="Details history view showing three newest-first synthetic Claude rate segments" src="docs/history-details-dark.png" width="900">
+</p>
+
+<p align="center"><sub>All README history is deterministic synthetic demo data; no account history is read.</sub></p>
 
 The graph legend decodes the solid usage trace (green normal, yellow warning,
 red critical), the dim gray ideal-budget line, and the green dotted path needed
-to reach 100% at reset. The versioned pace advice continues to use the
-whole-window average, so changing the chart range changes no directive.
+to reach 100% at reset. In Details, the gray line instead marks the fitted rate
+for that segment. The versioned pace advice continues to use the whole-window
+average, so changing the chart range or mode changes no directive.
 
 ### One-shot: `--check`
 

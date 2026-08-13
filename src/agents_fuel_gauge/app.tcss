@@ -23,7 +23,7 @@ Screen {
     margin: 0 1;
 }
 
-/* Textual's stock footer scrolls horizontally. AFG keeps all six actions in
+/* Textual's stock footer scrolls horizontally. AFG keeps every active action in
    sight instead: natural-width grid cells on one row, then three per row once
    their real rendered labels no longer fit. */
 ResponsiveFooter {
@@ -66,9 +66,26 @@ ProviderHistory {
     margin: 1 0 0 0;
 }
 
+ProviderHistory.-details {
+    height: auto;
+}
+
 UsageHistoryPlot {
     height: 1fr;
     min-height: 8;
+}
+
+HistorySegment {
+    height: 14;
+    min-height: 14;
+    border-bottom: solid $panel-lighten-1;
+}
+
+.history-segment-summary {
+    height: auto;
+    text-align: center;
+    color: $text-muted;
+    padding: 0 1;
 }
 
 .history-empty {

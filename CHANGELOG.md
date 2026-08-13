@@ -3,6 +3,24 @@
 Notable user-facing changes to agents-fuel-gauge are recorded here. Releases
 before 0.8.0 were documented in the Git commit history.
 
+## 0.10.0 - 2026-08-13
+
+### Added
+
+- Added a history-only `d Details` view that expands up to three inferred rate
+  segments per provider into individually scaled, newest-first plots. Each
+  segment shows its time range, percentage change, duration, and fitted daily
+  rate; `d` becomes `Overview` while viewing them.
+- Added deterministic synthetic README screenshots for Recorded, Full, and
+  Details history views.
+
+### Changed
+
+- The history legend switches its gray-line explanation from ideal budget pace
+  to fitted segment rate in Details.
+- The `z Zoom` action is hidden in Details, where each segment already has its
+  own viewport, and the default overview range is now labeled `Recorded`.
+
 ## 0.9.1 - 2026-08-13
 
 ### Fixed

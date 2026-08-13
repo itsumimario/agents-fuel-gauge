@@ -9,6 +9,7 @@ from agents_fuel_gauge import app as app_module, history
 from agents_fuel_gauge.app import (
     FuelGaugeApp,
     GaugeBar,
+    HistorySegment,
     HistoryLegend,
     Legend,
     ProviderHistory,
@@ -17,6 +18,7 @@ from agents_fuel_gauge.app import (
     UsageHistoryPlot,
     _axis_label,
     _history_viewport,
+    _segment_viewport,
 )
 from agents_fuel_gauge.models import (
     PACE_ARROW,
@@ -169,10 +171,12 @@ async def test_no_installed_providers_gets_one_generic_empty_state():
         assert app.query_one("#plots").display is False
 
 
-def test_history_and_zoom_bindings_are_registered_for_the_footer():
+def test_history_navigation_bindings_are_registered_for_the_footer():
     """Discoverability matters for a pane with no always-visible tab."""
     assert ("h", "toggle_history", "History") in FuelGaugeApp.BINDINGS
     assert ("z", "toggle_history_zoom", "Zoom") in FuelGaugeApp.BINDINGS
+    assert ("d", "set_history_mode('details')", "Details") in FuelGaugeApp.BINDINGS
+    assert ("d", "set_history_mode('overview')", "Overview") in FuelGaugeApp.BINDINGS
     assert ("o", "command_palette", "Options") in FuelGaugeApp.BINDINGS
     assert not any(key == "p" for key, _, _ in FuelGaugeApp.BINDINGS)
     assert not any(key == "ctrl+p" for key, _, _ in FuelGaugeApp.BINDINGS)
@@ -280,6 +284,18 @@ def test_full_history_viewport_retains_the_original_context():
     assert (y_min, y_max) == (0, 100)
 
 
+def test_segment_viewport_is_tighter_than_the_recorded_overview():
+    samples = _quantized_samples([(2, 20), (4, 6)])
+    inferred = history.segments(samples)
+
+    x_min, x_max, y_min, y_max = _segment_viewport(samples, inferred[-1])
+
+    assert samples[0]["t"] < x_min < inferred[-1].start
+    assert inferred[-1].end <= x_max <= samples[-1]["t"]
+    assert y_min < y_max
+    assert y_max - y_min < samples[-1]["pct"] - samples[0]["pct"]
+
+
 def test_zoomed_axis_labels_follow_the_visible_span_not_the_quota_window():
     """Three hours at the end of a week needs times, not one date repeated."""
     timestamp = NOW.timestamp()
@@ -327,6 +343,7 @@ async def test_history_key_switches_views_and_mounts_provider_plots(
         footer = app.query_one(ResponsiveFooter)
         assert plots.display is False
         assert "z" not in app.active_bindings
+        assert "d" not in app.active_bindings
         assert all("Zoom" not in child.render().plain for child in footer.children)
 
         await pilot.press("h")
@@ -334,6 +351,7 @@ async def test_history_key_switches_views_and_mounts_provider_plots(
 
         assert plots.display is True
         assert app.active_bindings["z"].binding.description == "Zoom"
+        assert app.active_bindings["d"].binding.description == "Details"
         assert any("Zoom" in child.render().plain for child in footer.children)
         assert app.query_one("#panels").display is False
         history_legend = app.query_one(HistoryLegend)
@@ -356,10 +374,32 @@ async def test_history_key_switches_views_and_mounts_provider_plots(
         )
 
         histories = list(app.query(ProviderHistory))
-        assert all(item.border_subtitle == "detail" for item in histories)
+        assert all(item.border_subtitle == "recorded" for item in histories)
         await pilot.press("z")
         await pilot.pause()
         assert app.history_full_window is True
+        assert all(
+            item.border_subtitle == "full window"
+            for item in app.query(ProviderHistory)
+        )
+
+        await pilot.press("d")
+        await pilot.pause()
+        assert app.history_details is True
+        assert "z" not in app.active_bindings
+        assert app.active_bindings["d"].binding.description == "Overview"
+        assert not app.query(UsageHistoryPlot)
+        assert all(
+            "not enough movement to split into details"
+            in item.render().plain
+            for item in app.query(".history-empty")
+        )
+
+        await pilot.press("d")
+        await pilot.pause()
+        assert app.history_details is False
+        assert app.active_bindings["d"].binding.description == "Details"
+        assert "z" in app.active_bindings
         assert all(
             item.border_subtitle == "full window"
             for item in app.query(ProviderHistory)
@@ -371,7 +411,58 @@ async def test_history_key_switches_views_and_mounts_provider_plots(
         assert app.query_one("#panels").display is True
         assert history_legend.display is False
         assert "z" not in app.active_bindings
+        assert "d" not in app.active_bindings
         assert all("Zoom" not in child.render().plain for child in footer.children)
+
+
+async def test_details_stacks_inferred_segments_newest_first(monkeypatch):
+    samples = _quantized_samples([(2, 20), (4, 6)])
+    inferred = history.segments(samples)
+    snapshot = ProviderSnapshot(
+        key="claude",
+        display_name="Claude",
+        captured_at=NOW,
+        gauges=[
+            Gauge(
+                "9d",
+                "all models",
+                samples[-1]["pct"],
+                NOW + timedelta(days=3),
+                window_seconds=9 * 86_400,
+            )
+        ],
+    )
+
+    async def fake_fetch_all():
+        return [snapshot]
+
+    monkeypatch.setattr(app_module, "fetch_all", fake_fetch_all)
+    monkeypatch.setattr(history, "read_window", lambda *args: samples)
+    app = FuelGaugeApp(interval=3600)
+    async with app.run_test(size=(60, 36)) as pilot:
+        await pilot.pause()
+        await pilot.press("h")
+        await pilot.press("d")
+        await pilot.pause()
+
+        cards = list(app.query(HistorySegment))
+        assert len(cards) == len(inferred) == 2
+        assert [card.segment for card in cards] == list(reversed(inferred))
+        assert [card.position for card in cards] == [0, 1]
+        summaries = [
+            card.query_one(".history-segment-summary").render().plain
+            for card in cards
+        ]
+        assert f"{inferred[-1].delta_pct:+.1f}%" in summaries[0]
+        assert f"fitted {inferred[-1].rate_per_day:.1f}%/d" in summaries[0]
+        assert "over" in summaries[0]
+        assert app.query_one(ProviderHistory).border_subtitle == "details · 2 segments"
+        assert app.active_bindings["d"].binding.description == "Overview"
+        assert "z" not in app.active_bindings
+        legend = app.query_one(HistoryLegend).render().plain
+        assert "fitted segment rate" in legend
+        assert "ideal budget pace" not in legend
+        assert "<svg" in app.export_screenshot()
 
 
 async def test_history_readout_chains_regimes_and_judges_only_the_latest(
@@ -453,7 +544,7 @@ async def test_history_readout_leaves_a_steady_on_pace_regime_unmarked(
 
 
 async def test_both_history_ranges_render_at_phone_width(monkeypatch):
-    """Detail is the phone default; full context must remain a safe escape hatch."""
+    """Recorded is the phone default; full context remains a safe escape hatch."""
     samples = _quantized_samples([(0.25, 20)])
     snapshot = ProviderSnapshot(
         key="claude",
@@ -477,7 +568,7 @@ async def test_both_history_ranges_render_at_phone_width(monkeypatch):
         await pilot.pause()
         await pilot.press("h")
         await pilot.pause()
-        assert app.query_one(ProviderHistory).border_subtitle == "detail"
+        assert app.query_one(ProviderHistory).border_subtitle == "recorded"
         assert "<svg" in app.export_screenshot()
 
         await pilot.press("z")
