@@ -185,9 +185,10 @@ def governing_indexes(
     is one unscoped meter — the tightest — plus any scoped meter tighter still.
     Everything else is slack, and slack is not an instruction.
 
-    Meters too new to judge are excluded: they have no rate to compare. If that
-    leaves nothing to compare at all, every meter with a reading speaks for
-    itself rather than the panel falling silent.
+    Meters too new to judge cannot recommend a direction, but they do carry one
+    safe veto: no overlapping meter may recommend speeding up until all the
+    windows that spending would consume have enough evidence. A young meter
+    can therefore silence an increase, never manufacture a decrease.
     """
     readings: list[tuple[int, Gauge, Pace]] = []
     for index, gauge in enumerate(snapshot.gauges):
@@ -195,10 +196,14 @@ def governing_indexes(
         if pace is not None:
             readings.append((index, gauge, pace))
 
-    judged = [r for r in readings if r[2].actionable]
+    judged = [
+        reading
+        for reading in readings
+        if reading[2].actionable
+        and _speedup_blocker(reading, readings) is None
+    ]
     if not judged:
-        # Nothing can be ranked, so nothing is suppressed.
-        return {index for index, _, _ in readings}
+        return set()
 
     def tightest(pool):
         return min(pool, key=lambda r: r[2].rate_adjustment)[0]
@@ -211,6 +216,34 @@ def governing_indexes(
         if reading[1].scoped:
             governors.add(tightest(general + [reading]))
     return governors
+
+
+def _speedup_blocker(
+    reading: tuple[int, "Gauge", "Pace"],
+    readings: list[tuple[int, "Gauge", "Pace"]],
+) -> tuple[int, "Gauge", "Pace"] | None:
+    """Return the young overlapping window that makes an increase unsafe.
+
+    Unscoped advice applies broadly, so any young meter under the provider can
+    veto it. Scoped advice is narrower: only a young general meter or another
+    window for that same scope overlaps its work.
+    """
+    _, gauge, pace = reading
+    if pace.verdict != "spare_capacity":
+        return None
+    return next(
+        (
+            other
+            for other in readings
+            if other[2].verdict == "too_early"
+            and (
+                not gauge.scoped
+                or not other[1].scoped
+                or other[1].scope == gauge.scope
+            )
+        ),
+        None,
+    )
 
 
 def directives(
@@ -240,16 +273,36 @@ def directives(
         governors = governing_indexes(snapshot, now)
         # The multiplier that survives every meter covering this one's work.
         paces = [(g, g.pace(now)) for g in snapshot.gauges]
-        judged = [(g, p) for g, p in paces if p is not None and p.actionable]
-        general = [p.rate_adjustment for g, p in judged if not g.scoped]
+        readings = [
+            (index, gauge, pace)
+            for index, (gauge, pace) in enumerate(paces)
+            if pace is not None
+        ]
+        judged = [
+            reading
+            for reading in readings
+            if reading[2].actionable
+            and _speedup_blocker(reading, readings) is None
+        ]
+        general = [
+            pace.rate_adjustment
+            for _, gauge, pace in judged
+            if not gauge.scoped
+        ]
 
         for index, gauge in enumerate(snapshot.gauges):
             pace = gauge.pace(now)
             if pace is None:
                 continue
+            reading = next(r for r in readings if r[0] == index)
+            blocker = _speedup_blocker(reading, readings)
             pool = list(general)
-            if pace.actionable:
+            if pace.actionable and blocker is None:
                 pool.append(pace.rate_adjustment)
+            if blocker is not None:
+                # Uncertainty is a ceiling of "hold", not permission to go
+                # faster and not evidence that slowing down is necessary.
+                pool.append(1.0)
             effective = min(pool) if pool else pace.rate_adjustment
             held_by = None
             if index not in governors:
@@ -261,6 +314,8 @@ def directives(
                     ),
                     None,
                 )
+                if held_by is None and blocker is not None:
+                    held_by = blocker[1].label
             out.append(
                 {
                     "provider": snapshot.key,
@@ -357,12 +412,15 @@ class Pace:
         second one can be read at a glance next to an arrow — the first makes
         you subtract from 100 before you know which way to go.
 
-        None where no change is called for, so a caller can tell "no advice"
-        from "advice of zero".
+        None where no change is called for or the positive factor hit AFG's
+        safety cap. In the latter case the direction is supported but a
+        numeric magnitude would be false precision.
         """
         if self.verdict == "slow_down":
             return (1.0 - self.rate_adjustment) * 100.0
         if self.verdict == "spare_capacity":
+            if self.at_cap:
+                return None
             return (self.rate_adjustment - 1.0) * 100.0
         return None
 
@@ -370,8 +428,8 @@ class Pace:
     def at_cap(self) -> bool:
         """True when the multiplier hit `MAX_RATE_ADJUSTMENT` and is a floor.
 
-        Happens on a barely-touched meter, where the honest answer is "far more
-        room than you are using" rather than any particular number.
+        Happens on a barely-touched meter, where the honest answer is
+        "headroom" rather than any particular number.
         """
         return self.rate_adjustment >= MAX_RATE_ADJUSTMENT
 
@@ -383,10 +441,11 @@ class Pace:
             return {
                 "exhausted": "spent",
                 "on_track": "on pace",
+                "spare_capacity": "headroom",
                 "too_early": "too new",
                 "window_over": "at reset",
             }.get(self.verdict, "")
-        return f"by {change:.0f}%{'+' if self.at_cap else ''}"
+        return f"by {change:.0f}%"
 
     @property
     def display(self) -> str:
@@ -420,6 +479,11 @@ class Pace:
                 f"{self.rate_adjustment:.0%} of its average rate"
             )
         if self.verdict == "spare_capacity":
+            if self.at_cap:
+                return (
+                    "substantial headroom, but too little usage for a "
+                    "reliable increase factor"
+                )
             return (
                 f"this meter has room to speed up {self.change_label} — to "
                 f"{self.rate_adjustment:.1f}x its average rate"

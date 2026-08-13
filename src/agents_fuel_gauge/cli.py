@@ -62,8 +62,8 @@ LEGEND_NOTE = (
     "so it lasts until it resets"
 )
 LEGEND_GOVERNS = (
-    "advice sits on the tightest meter only — one request spends from "
-    "all of them, so the others' slack is not yours to spend"
+    "advice sits on the tightest safe meter — a too-new overlapping "
+    "window can veto speed-up"
 )
 
 
@@ -220,8 +220,11 @@ def render_pretty(snapshots: list[ProviderSnapshot], color: bool) -> str:
             filled = min(BAR_WIDTH, round(gauge.percent / 100 * BAR_WIDTH))
             bar = "█" * filled + "░" * (BAR_WIDTH - filled)
             tint, off = (ANSI.get(gauge.severity, ""), RESET) if color else ("", "")
-            # Same rule as the TUI: only the meter that constrains you speaks.
-            pace = gauge.pace() if index in governors else None
+            # Same rule as the TUI: actionable advice belongs only to a meter
+            # that constrains you, while non-actionable status remains visible.
+            pace = gauge.pace()
+            if pace is not None and pace.actionable and index not in governors:
+                pace = None
             if pace:
                 arrow_tint = PACE_ANSI.get(pace.verdict, "") if color else ""
                 arrow_off = RESET if color and arrow_tint else ""

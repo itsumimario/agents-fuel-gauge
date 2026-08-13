@@ -93,8 +93,8 @@ LEGEND_NOTE = (
 # Why most rows have no advice on them. Without this the blank column reads as
 # missing data rather than as "this meter is not what is stopping you".
 LEGEND_GOVERNS = (
-    "advice sits on the tightest meter only — one request spends from "
-    "all of them, so the others' slack is not yours to spend"
+    "advice sits on the tightest safe meter — a too-new overlapping "
+    "window can veto speed-up"
 )
 
 
@@ -259,7 +259,10 @@ class GaugeBar(Static):
         # the same budget, so their headroom is not spendable and printing it
         # invited exactly the wrong move: "↑ by 150%" on a 5h row while the 7d
         # row said "↓ by 93%". See `governing_indexes`.
-        if not self._governs():
+        # Slack actionable advice stays quiet, but status is not advice. A
+        # non-governing weekly meter still needs to say "too new" rather than
+        # leaving a blank that looks like missing data.
+        if pace is not None and pace.actionable and not self._governs():
             pace = None
         arrow = pace.arrow if pace else ""
         remaining = gauge.seconds_remaining()
@@ -759,19 +762,20 @@ class HistorySegment(Vertical):
 
 
 class ProviderHistory(Vertical):
-    """The most pressured gauge for one provider, with rate-regime evidence."""
+    """One selected gauge for a provider, with rate-regime evidence."""
 
     def __init__(
         self,
         snapshot: ProviderSnapshot,
         full_window: bool = False,
         details: bool = False,
+        gauge: Gauge | None = None,
     ) -> None:
         super().__init__(id=f"history-{snapshot.key}")
         self.snapshot = snapshot
         self.full_window = full_window
         self.details = details
-        self.gauge = snapshot.tightest
+        self.gauge = gauge or snapshot.tightest
         self.samples = (
             history.read_window(
                 snapshot.key,
@@ -861,6 +865,7 @@ class FuelGaugeApp(App):
         ("t", "set_theme('textual-dark')", "Dark"),
         ("h", "toggle_history", "History"),
         ("z", "toggle_history_zoom", "Zoom"),
+        ("m", "cycle_history_meter", "Meter"),
         ("d", "set_history_mode('details')", "Details"),
         ("d", "set_history_mode('overview')", "Overview"),
         ("o", "command_palette", "Options"),
@@ -878,6 +883,7 @@ class FuelGaugeApp(App):
         self.showing_history = False
         self.history_full_window = False
         self.history_details = False
+        self.history_gauge_labels: dict[str, str] = {}
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -1020,12 +1026,54 @@ class FuelGaugeApp(App):
         await plots.remove_children()
         await plots.mount_all(
             [
-                ProviderHistory(snapshot, self.history_full_window)
+                ProviderHistory(
+                    snapshot,
+                    self.history_full_window,
+                    gauge=self._selected_history_gauge(snapshot),
+                )
                 if not self.history_details
-                else ProviderHistory(snapshot, details=True)
+                else ProviderHistory(
+                    snapshot,
+                    details=True,
+                    gauge=self._selected_history_gauge(snapshot),
+                )
                 for snapshot in self.snapshots
             ]
         )
+
+    def _history_choices(self, snapshot: ProviderSnapshot) -> list[Gauge]:
+        """Meters with enough recorded samples to draw, in dashboard order."""
+        recorded = [
+            gauge
+            for gauge in snapshot.gauges
+            if len(
+                history.read_window(
+                    snapshot.key,
+                    gauge.label,
+                    gauge.resets_at,
+                    gauge.window_seconds,
+                )
+            )
+            >= 2
+        ]
+        return recorded
+
+    def _selected_history_gauge(self, snapshot: ProviderSnapshot) -> Gauge | None:
+        choices = self._history_choices(snapshot)
+        if not choices:
+            # Preserve the existing empty-history panel while keeping Meter
+            # hidden until there is more than one drawable series to cycle.
+            return snapshot.tightest
+        selected = self.history_gauge_labels.get(snapshot.key)
+        gauge = next((g for g in choices if g.label == selected), None)
+        if gauge is None:
+            preferred = snapshot.tightest
+            gauge = next(
+                (g for g in choices if preferred and g.label == preferred.label),
+                choices[0],
+            )
+        self.history_gauge_labels[snapshot.key] = gauge.label
+        return gauge
 
     async def action_toggle_history(self) -> None:
         if not self.snapshots:
@@ -1045,6 +1093,30 @@ class FuelGaugeApp(App):
         self.history_full_window = not self.history_full_window
         await self._refresh_plots()
 
+    async def action_cycle_history_meter(self) -> None:
+        if not self.showing_history or not self.snapshots:
+            return
+        changed = False
+        for snapshot in self.snapshots:
+            choices = self._history_choices(snapshot)
+            if len(choices) < 2:
+                continue
+            selected = self._selected_history_gauge(snapshot)
+            index = next(
+                (
+                    index
+                    for index, gauge in enumerate(choices)
+                    if selected and gauge.label == selected.label
+                ),
+                0,
+            )
+            self.history_gauge_labels[snapshot.key] = choices[
+                (index + 1) % len(choices)
+            ].label
+            changed = True
+        if changed:
+            await self._refresh_plots()
+
     async def action_set_history_mode(self, mode: str) -> None:
         if not self.showing_history or not self.snapshots:
             return
@@ -1061,6 +1133,14 @@ class FuelGaugeApp(App):
                 self.showing_history
                 and not self.history_details
                 and bool(self.snapshots)
+            )
+        if action == "cycle_history_meter":
+            return (
+                self.showing_history
+                and any(
+                    len(self._history_choices(snapshot)) > 1
+                    for snapshot in self.snapshots
+                )
             )
         if action == "set_history_mode" and parameters:
             requested_details = parameters[0] == "details"

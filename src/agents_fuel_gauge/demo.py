@@ -74,7 +74,7 @@ def demo_snapshots() -> list[ProviderSnapshot]:
                 window_seconds=ONE_WEEK,
             ),
             # A scoped cap whose window has barely opened: no rate to estimate,
-            # so it cannot govern anything and stays quiet.
+            # so it cannot govern, but its "too new" status stays visible.
             Gauge(
                 "7d", "GPT-5.3-Codex-Spark", 12.0,
                 now + timedelta(days=6, hours=22),

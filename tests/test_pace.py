@@ -126,7 +126,7 @@ class TestNoLookalikeGlyphs:
 
     def test_directions_keep_their_arrow_and_gain_the_size(self):
         assert gauge(91, 0.40).pace(NOW).display.startswith("↓ by ")
-        assert gauge(20, 0.80).pace(NOW).display.startswith("↑ by ")
+        assert gauge(50, 0.80).pace(NOW).display.startswith("↑ by ")
 
     def test_exhausted_keeps_its_mark_and_says_so(self):
         """The one state where being overlooked costs you something."""
@@ -145,8 +145,8 @@ class TestChangeMagnitude:
         assert pace.change_label == f"by {pace.change_percent:.0f}%"
 
     def test_speed_up_is_the_excess_over_the_multiplier(self):
-        """Room for 1.6x the rate is speeding up by 60%."""
-        pace = gauge(20, 0.80).pace(NOW)
+        """An uncapped increase keeps its evidence-backed magnitude."""
+        pace = gauge(50, 0.80).pace(NOW)
         assert pace.change_percent == pytest.approx(
             (pace.rate_adjustment - 1) * 100
         )
@@ -158,11 +158,12 @@ class TestChangeMagnitude:
     def test_on_pace_reads_as_words_not_a_useless_zero(self):
         assert gauge(50, 0.50).pace(NOW).change_label == "on pace"
 
-    def test_a_capped_multiplier_is_marked_as_a_floor(self):
+    def test_a_capped_multiplier_reports_headroom_without_false_precision(self):
         """"by 900%" on a barely-used meter would read as a precise figure."""
         pace = gauge(0.01, 0.90).pace(NOW)
         assert pace.at_cap
-        assert pace.change_label.endswith("%+")
+        assert pace.change_percent is None
+        assert pace.change_label == "headroom"
 
     def test_advice_carries_both_readings(self):
         """The change is what you act on; the multiplier is what code applies."""
@@ -336,10 +337,10 @@ class TestGovernanceEdges:
         week = gauge(60, 0.50)
         assert governing_indexes(self._snapshot(too_new, week), NOW) == {1}
 
-    def test_when_nothing_can_be_judged_every_meter_speaks(self):
-        """Silence with no explanation is worse than an unranked reading."""
+    def test_when_nothing_can_be_judged_no_meter_governs(self):
+        """Status remains visible, but uncertainty is not actionable advice."""
         snap = self._snapshot(gauge(2, 0.01, window=FIVE_HOURS), gauge(1, 0.01))
-        assert governing_indexes(snap, NOW) == {0, 1}
+        assert governing_indexes(snap, NOW) == set()
 
     def test_meters_with_no_reading_are_absent_entirely(self):
         blind = Gauge("7d", "all models", 50.0, None)

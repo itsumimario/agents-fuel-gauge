@@ -230,8 +230,10 @@ class TestDirectives:
         for row in self._rows(capsys):
             if row["changePercent"] is None:
                 # No magnitude exists for these: nothing to scale (exhausted)
-                # or nothing worth acting on (on budget, window too new).
-                assert row["verdict"] in ("exhausted", "on_track", "too_early")
+                # or nothing worth quantifying (on budget, too new, capped).
+                assert row["verdict"] in (
+                    "exhausted", "on_track", "too_early", "spare_capacity",
+                )
                 continue
             if row["direction"] == "down":
                 assert row["changePercent"] < 0
@@ -263,11 +265,11 @@ class TestDirectives:
             assert row["effectiveRateAdjustment"] <= row["rateAdjustment"] + 1e-9
 
     def test_an_unjudgeable_meter_still_reports_the_real_constraint(self, capsys):
-        """Its own 1.0 means "no opinion", not "carry on at this rate"."""
+        """A young meter must never turn uncertainty into permission."""
         for row in self._rows(capsys):
             if row["verdict"] == "too_early":
                 assert row["rateAdjustment"] == 1.0
-                assert row["effectiveRateAdjustment"] != 1.0
+                assert row["effectiveRateAdjustment"] <= 1.0
 
     def test_a_non_governing_meter_reports_what_holds_it(self, capsys):
         """Otherwise "governs: false" is a dead end for the consumer."""
@@ -283,7 +285,14 @@ class TestDirectives:
             unscoped = [r for r in group if r["scope"] == "all models"]
             if not unscoped:
                 continue
-            tightest = min(r["rateAdjustment"] for r in unscoped)
+            candidates = [
+                r["rateAdjustment"]
+                for r in unscoped
+                if r["verdict"] != "too_early"
+            ]
+            if any(r["verdict"] == "too_early" for r in group):
+                candidates.append(1.0)
+            tightest = min(candidates)
             for row in unscoped:
                 assert row["effectiveRateAdjustment"] == pytest.approx(
                     tightest, abs=1e-3

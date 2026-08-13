@@ -25,6 +25,7 @@ from agents_fuel_gauge.models import (
     PACE_ARROW,
     Gauge,
     ProviderSnapshot,
+    directives,
     governing_indexes,
 )
 
@@ -201,6 +202,7 @@ def test_history_navigation_bindings_are_registered_for_the_footer():
     """Discoverability matters for a pane with no always-visible tab."""
     assert ("h", "toggle_history", "History") in FuelGaugeApp.BINDINGS
     assert ("z", "toggle_history_zoom", "Zoom") in FuelGaugeApp.BINDINGS
+    assert ("m", "cycle_history_meter", "Meter") in FuelGaugeApp.BINDINGS
     assert ("d", "set_history_mode('details')", "Details") in FuelGaugeApp.BINDINGS
     assert ("d", "set_history_mode('overview')", "Overview") in FuelGaugeApp.BINDINGS
     assert ("o", "command_palette", "Options") in FuelGaugeApp.BINDINGS
@@ -441,6 +443,42 @@ async def test_history_key_switches_views_and_mounts_provider_plots(
         assert all("Zoom" not in child.render().plain for child in footer.children)
 
 
+async def test_history_meter_key_cycles_every_recorded_claude_gauge(
+    stub, monkeypatch
+):
+    samples = _quantized_samples([(2, 10)])
+    monkeypatch.setattr(history, "read_window", lambda *args: samples)
+    app = FuelGaugeApp(interval=3600)
+
+    async with app.run_test(size=(100, 36)) as pilot:
+        await pilot.pause()
+        assert "m" not in app.active_bindings
+        await pilot.press("h")
+        await pilot.pause()
+
+        assert app.active_bindings["m"].binding.description == "Meter"
+
+        def selected_claude_label():
+            return next(
+                panel.gauge.label
+                for panel in app.query(ProviderHistory)
+                if panel.snapshot.key == "claude"
+            )
+
+        labels = [selected_claude_label()]
+        for _ in range(3):
+            await pilot.press("m")
+            await pilot.pause()
+            labels.append(selected_claude_label())
+
+        assert labels == [
+            "7d Fable",
+            "5h all models",
+            "7d all models",
+            "7d Fable",
+        ]
+
+
 async def test_details_stacks_shape_portions_newest_first(monkeypatch):
     samples = _shaped_samples()
     portions = history.episodes(samples)
@@ -643,7 +681,7 @@ async def test_no_undocumented_symbols_on_a_row(stub):
     app = FuelGaugeApp(interval=3600)
     async with app.run_test() as pilot:
         await pilot.pause()
-        # `+` marks a rate multiplier pinned at its cap ("by 900%+").
+        # `+` may appear in a localized reset timestamp.
         allowed = set(PACE_ARROW.values()) | set("█░%:…+")
         for bar in app.query(GaugeBar):
             drawn = bar.render().plain
@@ -679,27 +717,114 @@ class TestPaceArrow:
                 pace = bar.gauge.pace()
                 assert pace.display in line, f"{pace.display!r} missing: {line!r}"
 
+    async def test_a_capped_increase_has_no_fake_900_percent_precision(
+        self, monkeypatch
+    ):
+        now = datetime.now(timezone.utc)
+        snapshot = ProviderSnapshot(
+            key="claude",
+            display_name="Claude",
+            captured_at=now,
+            gauges=[
+                Gauge(
+                    "5h",
+                    "all models",
+                    1.0,
+                    now + timedelta(hours=1),
+                    window_seconds=FIVE_HOURS,
+                )
+            ],
+        )
+
+        async def fake_fetch_all():
+            return [snapshot]
+
+        monkeypatch.setattr(app_module, "fetch_all", fake_fetch_all)
+        app = FuelGaugeApp(interval=3600)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            line = app.query_one(GaugeBar).render().plain
+
+        pace = snapshot.gauges[0].pace(now)
+        assert pace is not None and pace.at_cap
+        assert pace.change_percent is None
+        assert pace.display == "↑ headroom"
+        assert "↑ headroom" in line
+        assert "900%" not in line
+        assert "reliable increase factor" in pace.advice
+
 
 class TestOnlyTheTightestMeterSpeaks:
     """The reported bug, at the level the user sees it.
 
     A 5h window with headroom sitting beside a nearly-spent weekly window used
-    to print "↑ by 150%" — an invitation to blow the weekly cap. Rows that do
-    not constrain you now say nothing at all in that column.
+    to print "↑ by 150%" — an invitation to blow the weekly cap. Actionable
+    slack stays quiet, while non-actionable status remains visible.
     """
 
-    async def test_non_governing_rows_carry_no_advice(self, stub):
+    async def test_non_governing_actionable_rows_carry_no_advice(self, stub):
         app = FuelGaugeApp(interval=3600)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause()
             governing = set(map(id, governing_bars(app)))
-            quiet = [b for b in app.query(GaugeBar) if id(b) not in governing]
+            quiet = [
+                b
+                for b in app.query(GaugeBar)
+                if id(b) not in governing
+                and b.gauge.pace() is not None
+                and b.gauge.pace().actionable
+            ]
             assert quiet, "fixture should include a meter that is not the constraint"
             for bar in quiet:
                 line = bar.render().plain
-                assert not re.search(r"[↑↓✗]|by \d+%|on pace|too new", line), (
+                assert not re.search(r"[↑↓✗]|by \d+%|on pace", line), (
                     f"slack meter should stay quiet: {line!r}"
                 )
+
+    async def test_a_young_week_vetoes_five_hour_speedup_but_shows_status(
+        self, monkeypatch
+    ):
+        """No 900% invitation while the shared weekly budget is uncertain."""
+        now = datetime.now(timezone.utc)
+        snapshot = ProviderSnapshot(
+            key="claude",
+            display_name="Claude",
+            captured_at=now,
+            gauges=[
+                Gauge(
+                    "5h",
+                    "all models",
+                    17.0,
+                    now + timedelta(minutes=40),
+                    window_seconds=FIVE_HOURS,
+                ),
+                Gauge(
+                    "7d",
+                    "all models",
+                    3.0,
+                    now + timedelta(days=6, hours=22),
+                    window_seconds=ONE_WEEK,
+                ),
+            ],
+        )
+
+        async def fake_fetch_all():
+            return [snapshot]
+
+        monkeypatch.setattr(app_module, "fetch_all", fake_fetch_all)
+        app = FuelGaugeApp(interval=3600)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            burst, week = [bar.render().plain for bar in app.query(GaugeBar)]
+
+        assert governing_indexes(snapshot, now) == set()
+        assert "↑" not in burst and "900%" not in burst
+        assert "too new" in week
+        rows = directives([snapshot], now)
+        burst_directive = next(row for row in rows if row["window"] == "5h")
+        assert burst_directive["governs"] is False
+        assert burst_directive["heldBy"] == "7d all models"
+        assert burst_directive["effectiveRateAdjustment"] == 1.0
 
     async def test_a_spent_week_silences_an_idle_five_hour_window(self, monkeypatch):
         """The exact shape reported: plenty of burst room, no weekly budget."""
