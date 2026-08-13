@@ -102,9 +102,9 @@ HistorySegment {
     padding: 0 2;
 }
 
-/* `auto`, not 1: three segments plus the required rate outgrow a phone-width
-   terminal, and a cropped rate line silently drops the verdict arrow — the one
-   character the line exists to carry. */
+/* `auto`, not 1: several rate chunks plus the required rate outgrow a
+   phone-width terminal, and a cropped rate line silently drops the verdict
+   arrow — the one character the line exists to carry. */
 .history-rate {
     height: auto;
     text-align: center;

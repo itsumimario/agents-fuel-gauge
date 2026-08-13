@@ -1,5 +1,6 @@
 """Headless tests that drive the real Textual app with the network stubbed out."""
 
+import math
 import re
 from datetime import datetime, timedelta, timezone
 
@@ -63,6 +64,31 @@ def _quantized_samples(regimes, sample_seconds=10 * 60):
             )
             regime_start = regime_end
         samples.append({"t": starts_at + elapsed, "pct": float(int(used))})
+    return samples
+
+
+def _shaped_samples(sample_seconds=30 * 60):
+    """A linear → variable → linear cumulative usage trace."""
+    samples = []
+    used = 0.0
+    previous_rate = 10.0
+    for elapsed in range(0, 3 * 86_400 + 1, sample_seconds):
+        day = elapsed / 86_400
+        if day < 1:
+            rate = 10.0
+        elif day < 2:
+            rate = 18 + 12 * math.sin(4 * math.pi * (day - 1))
+        else:
+            rate = 6.0
+        if elapsed:
+            used += (previous_rate + rate) / 2 * sample_seconds / 86_400
+        samples.append(
+            {
+                "t": NOW.timestamp() - 3 * 86_400 + elapsed,
+                "pct": float(int(used)),
+            }
+        )
+        previous_rate = rate
     return samples
 
 
@@ -390,7 +416,7 @@ async def test_history_key_switches_views_and_mounts_provider_plots(
         assert app.active_bindings["d"].binding.description == "Overview"
         assert not app.query(UsageHistoryPlot)
         assert all(
-            "not enough movement to split into details"
+            "not enough history to classify details"
             in item.render().plain
             for item in app.query(".history-empty")
         )
@@ -415,9 +441,9 @@ async def test_history_key_switches_views_and_mounts_provider_plots(
         assert all("Zoom" not in child.render().plain for child in footer.children)
 
 
-async def test_details_stacks_inferred_segments_newest_first(monkeypatch):
-    samples = _quantized_samples([(2, 20), (4, 6)])
-    inferred = history.segments(samples)
+async def test_details_stacks_shape_portions_newest_first(monkeypatch):
+    samples = _shaped_samples()
+    portions = history.episodes(samples)
     snapshot = ProviderSnapshot(
         key="claude",
         display_name="Claude",
@@ -446,21 +472,23 @@ async def test_details_stacks_inferred_segments_newest_first(monkeypatch):
         await pilot.pause()
 
         cards = list(app.query(HistorySegment))
-        assert len(cards) == len(inferred) == 2
-        assert [card.segment for card in cards] == list(reversed(inferred))
-        assert [card.position for card in cards] == [0, 1]
+        assert len(cards) == len(portions) == 3
+        assert [card.segment for card in cards] == list(reversed(portions))
+        assert [card.position for card in cards] == [0, 1, 2]
         summaries = [
             card.query_one(".history-segment-summary").render().plain
             for card in cards
         ]
-        assert f"{inferred[-1].delta_pct:+.1f}%" in summaries[0]
-        assert f"fitted {inferred[-1].rate_per_day:.1f}%/d" in summaries[0]
+        assert f"{portions[-1].delta_pct:+.1f}%" in summaries[0]
+        assert f"fitted {portions[-1].rate_per_day:.1f}%/d" in summaries[0]
+        assert "average" in summaries[1]
+        assert "variable" in cards[1].query_one(UsageHistoryPlot).segment_label
         assert "over" in summaries[0]
-        assert app.query_one(ProviderHistory).border_subtitle == "details · 2 segments"
+        assert app.query_one(ProviderHistory).border_subtitle == "details · 3 portions"
         assert app.active_bindings["d"].binding.description == "Overview"
         assert "z" not in app.active_bindings
         legend = app.query_one(HistoryLegend).render().plain
-        assert "fitted segment rate" in legend
+        assert "fitted linear portion" in legend
         assert "ideal budget pace" not in legend
         assert "<svg" in app.export_screenshot()
 

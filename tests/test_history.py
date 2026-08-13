@@ -1,5 +1,6 @@
 """History stays useful even when polling overlaps or one line is damaged."""
 
+import math
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -34,6 +35,26 @@ def _quantized_samples(regimes, sample_seconds=10 * 60):
             used += max(0.0, min(timestamp, boundary) - opened) * rate / DAY
             opened = boundary
         samples.append({"t": float(timestamp), "pct": float(int(used))})
+    return samples
+
+
+def _shaped_samples(sample_seconds=30 * 60):
+    """Alternate steady slopes with monotonic but visibly curved usage."""
+    samples = []
+    used = 0.0
+    previous_rate = 10.0
+    for timestamp in range(0, 3 * DAY + 1, sample_seconds):
+        day = timestamp / DAY
+        if day < 1:
+            rate = 10.0
+        elif day < 2:
+            rate = 18 + 12 * math.sin(4 * math.pi * (day - 1))
+        else:
+            rate = 6.0
+        if timestamp:
+            used += (previous_rate + rate) / 2 * sample_seconds / DAY
+        samples.append({"t": float(timestamp), "pct": float(int(used))})
+        previous_rate = rate
     return samples
 
 
@@ -215,6 +236,40 @@ def test_one_tick_fragment_is_absorbed_by_a_neighbor():
 
     assert len(found) == 1
     assert found[0].tick_count >= 2
+
+
+def test_episodes_keep_a_variable_shape_between_linear_delimiters():
+    found = history.episodes(_shaped_samples())
+
+    assert [portion.linear for portion in found] == [True, False, True]
+    assert found[0].end == pytest.approx(DAY, abs=4 * 3_600)
+    assert found[1].end == pytest.approx(2 * DAY, abs=4 * 3_600)
+    assert [found[0].rate_per_day, found[2].rate_per_day] == pytest.approx(
+        [10, 6], abs=0.5
+    )
+
+
+@pytest.mark.parametrize(
+    ("days", "rate"),
+    [(4, 0), (4, 2.2), (4, 10), (3, 32)],
+)
+def test_steady_integer_staircase_is_one_linear_episode(days, rate):
+    found = history.episodes(_quantized_samples([(days, rate)]))
+
+    assert len(found) == 1
+    assert found[0].linear is True
+    assert found[0].rate_per_day == pytest.approx(rate, abs=0.25)
+
+
+def test_details_keep_only_the_five_newest_episodes():
+    samples = _quantized_samples(
+        [(1.5, 8), (1.5, 24), (1.5, 4), (1.5, 18)],
+        sample_seconds=30 * 60,
+    )
+    all_portions = history.episodes(samples, max_episodes=99)
+
+    assert len(all_portions) > 5
+    assert history.episodes(samples) == all_portions[-5:]
 
 
 def test_recording_ignores_cached_carried_forward_and_failed_snapshots():

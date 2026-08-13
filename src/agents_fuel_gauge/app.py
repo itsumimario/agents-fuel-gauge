@@ -141,7 +141,7 @@ def _percent_at(samples: list[history.Sample], timestamp: float) -> float:
 
 def _segment_viewport(
     samples: list[history.Sample],
-    segment: history.Segment,
+    segment: history.Segment | history.Episode,
 ) -> tuple[float, float, float, float]:
     """Frame one inferred regime tightly enough to be legible on a phone."""
     points = sorted(samples, key=lambda sample: sample["t"])
@@ -158,7 +158,12 @@ def _segment_viewport(
         if x_min <= sample["t"] <= x_max
     ]
     fitted_start = _percent_at(points, segment.start)
-    fitted_end = fitted_start + segment.delta_pct
+    fitted_delta = (
+        segment.rate_per_day * (segment.end - segment.start) / 86_400
+        if not isinstance(segment, history.Episode) or segment.linear
+        else segment.delta_pct
+    )
+    fitted_end = fitted_start + fitted_delta
     values = [*visible, fitted_start, fitted_end]
     low = min(values)
     high = max(values)
@@ -166,7 +171,7 @@ def _segment_viewport(
     return x_min, x_max, max(0.0, low - y_padding), high + y_padding
 
 
-def _segment_range(segment: history.Segment) -> str:
+def _segment_range(segment: history.Segment | history.Episode) -> str:
     """A compact local-time range that still disambiguates crossed dates."""
     start = datetime.fromtimestamp(segment.start).astimezone()
     end = datetime.fromtimestamp(segment.end).astimezone()
@@ -552,7 +557,7 @@ class HistoryLegend(Static):
             ("━━", "red", "critical usage"),
         ]
         if getattr(self.app, "history_details", False):
-            lines.append(("━━", "dim grey70", "fitted segment rate"))
+            lines.append(("━━", "dim grey70", "fitted linear portion"))
         else:
             lines.extend(
                 [
@@ -623,14 +628,14 @@ PLOTEXT_SEVERITY = {
 
 
 class UsageHistoryPlot(PlotextPlot):
-    """A gauge trace in overview context or against one fitted segment."""
+    """A gauge trace in overview context or one detailed portion."""
 
     def __init__(
         self,
         gauge: Gauge,
         samples: list[history.Sample],
         full_window: bool = False,
-        segment: history.Segment | None = None,
+        segment: history.Segment | history.Episode | None = None,
         segment_label: str = "",
     ) -> None:
         super().__init__()
@@ -666,11 +671,16 @@ class UsageHistoryPlot(PlotextPlot):
                 color="gray",
                 style="dim",
             )
-        else:
+        elif not isinstance(self.segment, history.Episode) or self.segment.linear:
             fitted_start = _percent_at(self.samples, self.segment.start)
+            fitted_delta = (
+                self.segment.rate_per_day
+                * (self.segment.end - self.segment.start)
+                / 86_400
+            )
             self.plt.plot(
                 [self.segment.start, self.segment.end],
-                [fitted_start, fitted_start + self.segment.delta_pct],
+                [fitted_start, fitted_start + fitted_delta],
                 color="gray",
                 style="dim",
             )
@@ -714,13 +724,13 @@ class UsageHistoryPlot(PlotextPlot):
 
 
 class HistorySegment(Vertical):
-    """One inferred regime, independently scaled with its evidence beneath."""
+    """One shape-based portion, independently scaled with evidence beneath."""
 
     def __init__(
         self,
         gauge: Gauge,
         samples: list[history.Sample],
-        segment: history.Segment,
+        segment: history.Episode,
         position: int,
     ) -> None:
         super().__init__(classes="history-segment")
@@ -731,17 +741,19 @@ class HistorySegment(Vertical):
 
     def compose(self) -> ComposeResult:
         label = "newest" if self.position == 0 else f"previous {self.position}"
+        shape = "linear" if self.segment.linear else "variable"
         yield UsageHistoryPlot(
             self.gauge,
             self.samples,
             segment=self.segment,
-            segment_label=label,
+            segment_label=f"{label} · {shape}",
         )
+        rate_label = "fitted" if self.segment.linear else "average"
         yield Static(
             f"{_segment_range(self.segment)} · "
             f"{self.segment.delta_pct:+.1f}% over "
             f"{_segment_duration(self.segment.end - self.segment.start)} · "
-            f"fitted {self.segment.rate_per_day:.1f}%/d",
+            f"{rate_label} {self.segment.rate_per_day:.1f}%/d",
             classes="history-segment-summary",
         )
 
@@ -771,6 +783,7 @@ class ProviderHistory(Vertical):
             else []
         )
         self.inferred = history.segments(self.samples)
+        self.portions = history.episodes(self.samples)
         if self.details:
             self.add_class("-details")
 
@@ -789,14 +802,14 @@ class ProviderHistory(Vertical):
             return
 
         if self.details:
-            if not self.inferred:
+            if not self.portions:
                 yield Static(
-                    "not enough movement to split into details yet",
+                    "not enough history to classify details yet",
                     classes="history-empty",
                 )
                 return
-            for position, segment in enumerate(reversed(self.inferred)):
-                yield HistorySegment(gauge, self.samples, segment, position)
+            for position, portion in enumerate(reversed(self.portions)):
+                yield HistorySegment(gauge, self.samples, portion, position)
             return
 
         yield UsageHistoryPlot(gauge, self.samples, self.full_window)
@@ -827,9 +840,9 @@ class ProviderHistory(Vertical):
     def on_mount(self) -> None:
         self.border_title = self.snapshot.display_name
         if self.details:
-            count = len(self.inferred)
+            count = len(self.portions)
             plural = "s" if count != 1 else ""
-            self.border_subtitle = f"details · {count} segment{plural}"
+            self.border_subtitle = f"details · {count} portion{plural}"
         else:
             self.border_subtitle = "full window" if self.full_window else "recorded"
 
