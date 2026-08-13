@@ -104,13 +104,14 @@ afg --update             # update to the latest version
 
 ### The arrow tells you what to do
 
-Every row ends in an instruction, not a status report. The arrow points the way
-you should move, and says how far:
+When AFG has safe advice, the arrow points the way you should move and says how
+far. Otherwise the row uses words to report status without inventing a move:
 
 | | |
 | --- | --- |
 | `↓ by 92%` | **slow down.** At this rate the meter runs out before it resets — cut to 8% of it |
 | `↑ by 150%` | **speed up.** There is room for two and a half times this rate |
+| `↑ headroom` | more usage is supportable, but the increase is too large to estimate reliably |
 | `on pace` | this rate lasts exactly to the reset |
 | `✗ spent` | nothing left until it resets |
 | `too new` | the window has barely opened; no rate worth estimating yet |
@@ -120,9 +121,12 @@ because a glyph you have to look up is a question, not information — and the
 `·` and `◦` this replaced were a pixel apart while meaning opposite things
 about whether the reading could be trusted.
 
-**Only the tightest meter carries advice.** Meters aren't independent: one
-request spends from all of them at once, so a 5-hour window with headroom to
-spare cannot license spending that a nearly-empty weekly window forbids.
+**Only safe, jointly compatible advice gets an arrow.** Meters aren't
+independent: one request spends from all of them at once, so a 5-hour window
+with headroom to spare cannot license spending that a weekly window forbids. A
+weekly window that is still `too new` cannot prove you should slow down, but it
+does veto “speed up” until enough of that window has elapsed. Its `too new`
+status remains visible even when another meter governs.
 
 ```
 5h all models  ████░░  18%  Sat Aug  8 14:51   1h 01m
@@ -138,12 +142,13 @@ why it can add a second, tighter instruction without throttling anything else.
 The percentage is the *change*, so `↓ by 92%` and "throttle to 8%" are the same
 instruction — the first is just readable at a glance. It's measured against
 each meter's **average rate so far**, since one reading is all a snapshot gives
-you. A `+` (`↑ by 900%+`) means the figure hit its cap and is a floor, not a
-measurement.
+you. If the increase calculation hits AFG's 10× safety cap, the row says
+`↑ headroom` instead of printing a fake `900%` recommendation.
 
-That number is what makes the whole thing actionable: a bar at 91% tells you
-to panic or relax depending on facts that aren't on the screen. `↓ by 92%`
-tells you what to actually change.
+An evidence-backed number is what makes the whole thing actionable: a bar at
+91% tells you to panic or relax depending on facts that aren't on the screen.
+`↓ by 92%` tells you what to actually change; `headroom` is deliberately less
+specific when the arithmetic cannot support a magnitude.
 
 Each panel shows its own last-updated age, because the two providers are
 fetched independently and one can go stale while the other keeps refreshing.
@@ -158,6 +163,7 @@ plan label yields first and the age becomes compact before the account yields.
 | `t` | switch to `Light` or `Dark` (the button names the destination) |
 | `h` | toggle quota bars/history plots |
 | `z` | toggle Recorded/Full history range (shown in history overview only) |
+| `m` | cycle each provider through its recorded meters (shown when available) |
 | `d` | switch between Details and Overview (shown in history only) |
 | `o` | open `Options` |
 | `q` | quit |
@@ -173,12 +179,16 @@ scrolling off-screen.
 
 #### History at a glance
 
-- **History (`h`)** replaces the quota bars with each provider's tightest
-  meter over time. The solid line is observed usage; the gray diagonal is an
-  even budget pace; the dotted line is the pace needed from the latest sample
-  to reach 100% exactly at reset. The rate readout beneath the plot summarizes
-  changes in how quickly usage was rising; only its latest rate gets an advice
-  arrow, because older rates are context rather than behavior you can change.
+- **History (`h`)** replaces the quota bars with one recorded meter per
+  provider, initially AFG's current most-pressured meter. Press **Meter (`m`)**
+  to cycle through every gauge with drawable samples, including a 7d series
+  that is currently `too new` or does not govern. The selected meter survives
+  refreshes and Recorded/Full/Details changes. The solid line is observed
+  usage; the gray diagonal is an even budget pace; the dotted line is the pace
+  needed from the latest sample to reach 100% exactly at reset. The rate
+  readout beneath the plot summarizes changes in how quickly usage was rising;
+  only its latest rate gets an advice arrow, because older rates are context
+  rather than behavior you can change.
 - **Zoom (`z`)** switches the overview between **Recorded**, which enlarges the
   part AFG has actually observed, and **Full**, which restores the entire quota
   window from 0–100%. It changes only the viewport, never the usage data or
@@ -237,10 +247,10 @@ range or mode changes no directive.
 
 ```console
 $ afg --check
-claude  5h  all-models           18%  1h01m  -               spare_capacity  2026-08-08T14:52  1h01m  +900%
+claude  5h  all-models           18%  1h01m  -               spare_capacity  2026-08-08T14:52  1h01m  -
 claude  7d  all-models           88%  2d00h  GOVERNS         slow_down       2026-08-10T13:58  2d0h   -66%
 claude  7d  Fable                91%  2d00h  ACTIVE,GOVERNS  slow_down       2026-08-10T13:58  2d0h   -75%
-codex   7d  all-models           62%  1d02h  GOVERNS         spare_capacity  2026-08-09T16:50  1d2h   +220%
+codex   7d  all-models           62%  1d02h  -               spare_capacity  2026-08-09T16:50  1d2h   +220%
 codex   7d  GPT-5.3-Codex-Spark  12%  6d21h  -               too_early       2026-08-15T11:50  6d21h  -
 ```
 
@@ -257,9 +267,10 @@ codex   7d  GPT-5.3-Codex-Spark  12%  6d21h  -               too_early       202
 | `$9` | remaining | `18h07m` inside a day, `5d1h` past one |
 | `$10` | change | signed: `-92%` means slow down by 92% |
 
-Columns 7 and 10 are always the meter's *own* reading, which is why the 5-hour
-row above still shows `+900%` — true of that meter alone, and not something you
-can act on. `GOVERNS` is how a script tells the two apart.
+Columns 7 and 10 are the meter's *own* reading; `GOVERNS` is what makes that
+reading safe to act on. A capped increase has no numeric change, and a meter
+with apparent headroom does not gain `GOVERNS` while an overlapping window is
+`too_early`.
 
 Every field is a single whitespace-free token, so awk columns mean what you'd
 expect:
@@ -328,7 +339,7 @@ but temporarily unavailable" without scraping prose.
 | ----- | ------- |
 | `provider`, `label` | which meter this applies to |
 | `governs` | **`true` when this meter is the tightest constraint on the work it covers.** A subscriber steering its own rate should filter on this, or use `effectiveRateAdjustment` |
-| `effectiveRateAdjustment` | the multiplier that actually applies once every meter covering this work gets a vote — never larger than `rateAdjustment` |
+| `effectiveRateAdjustment` | the multiplier that actually applies once every meter covering this work gets a vote — never larger than `rateAdjustment`; capped at `1.0` when a young overlapping meter has not cleared an increase |
 | `heldBy` | the meter overruling this one, when `governs` is false |
 | `verdict` | `slow_down` / `on_track` / `spare_capacity` / `exhausted` / `too_early` — this meter's own reading |
 | `direction` | `down` / `up` / `hold` — the arrow, as a value |
@@ -353,7 +364,9 @@ described one window.
 
 A window that has only just opened reports `too_early`, `actionable: false` and
 `rateAdjustment: 1.0` — a safe no-op. Minutes of data divide into a wild ratio,
-and throttling on that would be worse than doing nothing.
+and throttling on that would be worse than doing nothing. Its uncertainty also
+caps overlapping `effectiveRateAdjustment` values at `1.0`: hold is safe;
+speeding up without weekly evidence is not.
 
 #### Per-gauge detail
 
