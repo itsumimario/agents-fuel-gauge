@@ -3,6 +3,15 @@
 Notable user-facing changes to agents-fuel-gauge are recorded here. Releases
 before 0.8.0 were documented in the Git commit history.
 
+## 0.12.1 - 2026-08-13
+
+### Changed
+
+- History controls now name their destination: `h History/Gauges`, `z Full
+  range/Recorded range`, `m Next meter`, and `d Segments/Overview`.
+- Each history panel heading now names both the provider and selected meter,
+  while its subtitle names the current range or segmented layout.
+
 ## 0.12.0 - 2026-08-13
 
 ### Added
