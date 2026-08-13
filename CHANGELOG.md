@@ -3,6 +3,20 @@
 Notable user-facing changes to agents-fuel-gauge are recorded here. Releases
 before 0.8.0 were documented in the Git commit history.
 
+## 0.11.0 - 2026-08-13
+
+### Changed
+
+- Details now slices history at transitions between sustained linear and
+  variable behavior. Each resulting portion gets its own graph, with variable
+  shapes kept intact instead of flattened into several fitted-rate chunks.
+- Increased Details from three to five newest-first graphs. Linear portions
+  show a fitted rate and gray fit line; variable portions show their observed
+  shape and an explicitly labeled end-to-end average.
+- Reworked the shared synthetic screenshot trace to demonstrate five visibly
+  different alternating linear and variable portions in Recorded, Full, and
+  Details.
+
 ## 0.10.2 - 2026-08-13
 
 ### Fixed

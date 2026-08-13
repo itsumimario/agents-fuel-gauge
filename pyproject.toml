@@ -1,6 +1,6 @@
 [project]
 name = "agents-fuel-gauge"
-version = "0.10.2"
+version = "0.11.0"
 description = "One-screen fuel gauge for Claude Code and Codex subscription limits, including the per-model scoped caps other tools drop."
 readme = "README.md"
 requires-python = ">=3.11"

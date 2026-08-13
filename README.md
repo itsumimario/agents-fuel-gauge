@@ -162,8 +162,10 @@ plan label yields first and the age becomes compact before the account yields.
 | `o` | open `Options` |
 | `q` | quit |
 
-Refreshes every 60s (`-i` to change, 15s minimum). A failed refresh never
-blanks a panel — the last known numbers stay up behind a warning.
+Refreshes every 60s (`-i` to change, 15s minimum). `r` bypasses AFG's normal
+one-minute cache, but respects a provider-requested rate-limit backoff. A
+failed refresh never blanks a panel — the last known numbers stay up behind a
+warning that explains the failure and, for rate limits, when AFG will retry.
 At phone widths the clickable key buttons wrap onto a second row instead of
 scrolling off-screen.
 
@@ -179,10 +181,10 @@ scrolling off-screen.
   part AFG has actually observed, and **Full**, which restores the entire quota
   window from 0–100%. It changes only the viewport, never the usage data or
   advice.
-- **Details (`d`)** turns up to three inferred steady-rate portions into
-  separate, newest-first plots. Each portion gets its own scale plus its time
-  range, percentage change, duration, and fitted daily rate. Press `d` again
-  for **Overview**.
+- **Details (`d`)** slices the trace at transitions between sustained linear
+  and variable behavior, then shows up to five resulting portions as separate,
+  newest-first plots. Each gets its own scale, time range, percentage change,
+  duration, and daily rate. Press `d` again for **Overview**.
 
 #### Recorded and Full overview
 
@@ -206,23 +208,28 @@ before the trace or future days that have not happened. Press `z` for the
 #### Details
 
 Press `d` when the overview compresses a meaningful pace change too tightly.
-The same rate chunks shown beneath the overview become independently scaled,
-vertically stacked plots, so a short correction remains readable on a narrow
-screen. If there is not enough movement to infer a segment yet, AFG says so
-instead of inventing one. In Details, `z` is hidden because the segment plots
-already own their viewports.
+AFG treats sustained straight portions as delimiters and keeps the changing
+shape between them intact. The resulting linear and variable portions become
+independently scaled, vertically stacked plots, so a brief curve remains
+readable on a narrow screen instead of being flattened into an average. Linear
+portions show a fitted rate and gray fit line; variable portions show only the
+observed shape and label its end-to-end rate as an average. If there is not
+enough history to classify the shape yet, AFG says so instead of inventing a
+portion. In Details, `z` is hidden because the portion plots already own their
+viewports.
 
 <p align="center">
-  <img alt="Details history view showing three newest-first synthetic Claude rate segments" src="docs/history-details-dark.png" width="900">
+  <img alt="Details history view showing five newest-first linear and variable portions of the synthetic Claude trace" src="docs/history-details-dark.png" width="900">
 </p>
 
 <p align="center"><sub>Recorded, Full, and Details all show the same deterministic synthetic Claude trace; no account history is read.</sub></p>
 
 The graph legend decodes the solid usage trace (green normal, orange warning,
 red critical), the dim gray ideal-budget line, and the green dotted path needed
-to reach 100% at reset. In Details, the gray line instead marks the fitted rate
-for that segment. Pace advice continues to use the whole-window average, so
-changing the chart range or mode changes no directive.
+to reach 100% at reset. In Details, a gray line instead marks the fit for a
+linear portion; variable portions deliberately have no straight fit line.
+Pace advice continues to use the whole-window average, so changing the chart
+range or mode changes no directive.
 
 ### One-shot: `--check`
 

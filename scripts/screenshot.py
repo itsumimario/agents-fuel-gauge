@@ -20,6 +20,7 @@ Two artefacts per theme:
 from __future__ import annotations
 
 import asyncio
+import math
 import os
 import re
 import sys
@@ -37,7 +38,7 @@ OUT = REPO / "docs"
 # image reads as content the reader is missing rather than as a live control.
 SIZE = (96, 22)
 HISTORY_SIZE = (96, 34)
-DETAILS_SIZE = (96, 52)
+DETAILS_SIZE = (96, 76)
 
 # Verified to cover U+2588 U+2591 U+256D U+2193 U+2191 on a stock Linux font set.
 RASTER_FONT = "DejaVu Sans Mono"
@@ -68,47 +69,65 @@ def require_semantic_colors(svg: str) -> None:
 
 def synthetic_series(
     end: float,
-    base_percent: float,
-    regimes: list[tuple[float, float]],
+    end_percent: float,
     sample_seconds: int = 30 * 60,
 ) -> list[history.Sample]:
-    """Build the same integer-percent staircase a provider would report."""
-    total_seconds = sum(days * 86_400 for days, _ in regimes)
-    samples: list[history.Sample] = []
+    """Build five alternating linear/variable portions for documentation."""
+    total_seconds = int(4.5 * 86_400)
+    accrued = [0.0]
+    previous_rate = 18.0
     for elapsed in range(0, int(total_seconds) + 1, sample_seconds):
-        percent = base_percent
-        regime_start = 0.0
-        for days, rate_per_day in regimes:
-            regime_end = regime_start + days * 86_400
-            active_seconds = max(
-                0.0, min(elapsed, regime_end) - regime_start
+        day = elapsed / 86_400
+        if day < 1:
+            rate = 18.0
+        elif day < 2.25:
+            # Two rate waves produce one cumulative roller-coaster portion.
+            rate = 14 + 10 * math.sin(4 * math.pi * (day - 1) / 1.25)
+        elif day < 3.25:
+            rate = 4.0
+        elif day < 4:
+            # A single acceleration/deceleration arc is visibly different.
+            rate = 4 + 28 * math.sin(math.pi * (day - 3.25) / 0.75) ** 2
+        else:
+            rate = 0.0
+        if elapsed:
+            accrued.append(
+                accrued[-1]
+                + (previous_rate + rate) / 2 * sample_seconds / 86_400
             )
-            percent += active_seconds * rate_per_day / 86_400
-            regime_start = regime_end
-        samples.append(
-            {
-                "t": end - total_seconds + elapsed,
-                "pct": float(int(percent)),
-            }
-        )
-    return samples
+        previous_rate = rate
+
+    base_percent = end_percent - accrued[-1]
+    return [
+        {
+            "t": end - total_seconds + index * sample_seconds,
+            "pct": float(int(base_percent + used)),
+        }
+        for index, used in enumerate(accrued)
+    ]
 
 
 def synthetic_history():
     """History shaped for documentation, keyed like the production journal."""
     snapshots = demo_snapshots()
-    return snapshots, {
+    generated = {
         ("claude", "7d Fable"): synthetic_series(
             snapshots[0].captured_at.timestamp(),
-            36.7,
-            [
-                (1.25, 32),  # sustained heavy use: many closely spaced ticks
-                (1.5, 2.2),  # a quiet stretch: only a few isolated ticks
-                (0.5, 22),  # one short burst before usage stops entirely
-                (1.25, 0),  # silence extends the newest inferred segment
-            ],
+            snapshots[0].gauges[-1].percent,
         ),
     }
+    portions = history.episodes(generated[("claude", "7d Fable")])
+    if [portion.linear for portion in portions] != [
+        True,
+        False,
+        True,
+        False,
+        True,
+    ]:
+        raise RuntimeError(
+            "synthetic history no longer demonstrates five alternating portions"
+        )
+    return snapshots, generated
 
 
 async def shoot(
