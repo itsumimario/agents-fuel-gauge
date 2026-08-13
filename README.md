@@ -29,7 +29,10 @@
 > There is nothing to authorize, nothing to paste, and nothing to set up.
 > Install it and run `afg`.
 
-Either CLI alone is enough — you'll just get one panel instead of two.
+Either CLI alone is enough. The live dashboard only draws panels for CLIs that
+are installed, so a Codex-only setup gets one useful panel rather than a second
+box explaining Claude. Installed-but-unavailable CLIs stay visible with their
+error, because a sign-in or network problem is something you can act on.
 
 ## Install
 
@@ -73,11 +76,12 @@ uv tool install git+https://github.com/itsumimario/agents-fuel-gauge.git
 - **It tells you how much to slow down or speed up**, per meter, not just how
   full the bar is. 91% used is fine with an hour left and a crisis with four
   days left.
-- **History makes a course correction visible.** Press `p` to compare the
+- **History makes a course correction visible.** Press `h` to compare the
   actual trace with the on-budget diagonal and the rate required from here.
   Rate chunks summarize stretches of steady percent-tick movement, so a new
   pace stays visible beside the old one. Only the latest chunk gets an arrow:
-  older chunks are context, not behavior you can still change.
+  older chunks are context, not behavior you can still change. The default
+  view zooms to the recorded tail; `z` restores the complete quota window.
 - **One-shot from the command line.** `afg --check` prints once and exits, for
   scripts, prompts, cron, and CI.
 - **A tiny JSON service for anything else.** `afg --json` gives other tools a
@@ -147,7 +151,8 @@ fetched independently and one can go stale while the other keeps refreshing.
 | --- | ------ |
 | `r` | refresh now |
 | `t` | toggle light/dark |
-| `p` | toggle quota bars/history plots |
+| `h` | toggle quota bars/history plots |
+| `z` | toggle detailed/full history range |
 | `q` | quit |
 
 Refreshes every 60s (`-i` to change, 15s minimum). A failed refresh never
@@ -156,8 +161,11 @@ blanks a panel — the last known numbers stay up behind a warning.
 The history view plots the gauge under the most pace pressure for each
 provider. Its display-only rate chunks group stretches of steady percent-tick
 movement; only the latest chunk gets a verdict against the rate required from
-here. The versioned pace advice continues to use the whole-window average, so
-existing `--check` and `--json` semantics do not change.
+here. It opens in a phone-friendly detailed range: just before the first
+recorded sample through the reset, with the percentage scale fitted to the
+lines that are actually visible. Press `z` for the original 0–100%, whole-window
+context and again to return to detail. The versioned pace advice continues to
+use the whole-window average, so changing the chart range changes no directive.
 
 ### One-shot: `--check`
 
@@ -204,7 +212,11 @@ them the other way round.
 Columns are only ever appended, never inserted, so scripts written against an
 older version keep working.
 
-Exits non-zero if a provider couldn't be read.
+If a CLI is not installed, `--check` emits a distinct status row such as
+`claude NOT_INSTALLED ...` instead of pretending a fetch failed. One working
+provider is enough for a successful exit; the command exits non-zero when an
+installed provider could not be read, or when neither supported CLI is
+installed.
 
 Add `--pretty` for the same data with bars, when a human is reading.
 
@@ -213,7 +225,10 @@ Add `--pretty` for the same data with bars, when a human is reading.
 `afg --json` emits an envelope: **one directive per meter**, plus the full
 per-provider detail if you want to look closer. Both providers are normalised
 into the same shape, so consumers never need to know which API a number came
-from.
+from. Every provider record includes `installed`: an absent CLI remains in JSON
+with `installed: false`, an explanatory `error`, and no gauges or directives.
+That lets an integration distinguish "not used on this machine" from "installed
+but temporarily unavailable" without scraping prose.
 
 ```json
 {
@@ -276,7 +291,8 @@ and throttling on that would be worse than doing nothing.
 
 #### Per-gauge detail
 
-Each gauge under `providers[].gauges[]` carries `window`, `scope`, `label`,
+Each provider under `providers[]` carries `installed`, and each gauge under
+`providers[].gauges[]` carries `window`, `scope`, `label`,
 `percent`, `severity`, `activeLimit`, `resetsAt`, `secondsRemaining`,
 `windowSeconds`, and its own `pace` object.
 
@@ -358,8 +374,9 @@ rather than failing silently.
 
 ### What it sends, and where
 
-Two read-only `GET`s to the providers' own usage endpoints, using tokens
-already on your machine:
+Up to two read-only `GET`s to the installed providers' own usage endpoints,
+using tokens already on your machine. A provider whose CLI is absent is never
+contacted:
 
 | Provider | Endpoint |
 | -------- | -------- |
@@ -409,3 +426,5 @@ Built with [Textual](https://textual.textualize.io/) for the terminal UI,
 ## License
 
 [MIT](LICENSE) © ItsumiMario
+
+Release notes are kept in [CHANGELOG.md](CHANGELOG.md).

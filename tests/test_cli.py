@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from agents_fuel_gauge.cli import main, render_plain, render_pretty
+from agents_fuel_gauge.cli import build_payload, main, render_plain, render_pretty
 from agents_fuel_gauge.demo import demo_snapshots
 from agents_fuel_gauge.models import Gauge, ProviderSnapshot
 
@@ -81,6 +81,15 @@ class TestPlain:
         snaps = [ProviderSnapshot(key="claude", display_name="Claude", error="nope")]
         assert "ERROR" in render_plain(snaps)
 
+    def test_an_absent_cli_has_a_machine_distinct_status(self):
+        snap = ProviderSnapshot(
+            key="claude", display_name="Claude", installed=False,
+            error="Claude CLI is not installed or not on PATH",
+        )
+        out = render_plain([snap])
+        assert "NOT_INSTALLED" in out
+        assert "ERROR" not in out
+
     def test_empty_input_says_so(self):
         assert "no usage data" in render_plain([])
 
@@ -136,6 +145,13 @@ class TestPretty:
     def test_color_mode_emits_escapes(self):
         assert "\033" in render_pretty(demo_snapshots(), color=True)
 
+    def test_an_absent_cli_is_explicit_in_pretty_output(self):
+        snap = ProviderSnapshot(
+            key="claude", display_name="Claude", installed=False,
+            error="Claude CLI is not installed or not on PATH",
+        )
+        assert "NOT INSTALLED" in render_pretty([snap], color=False)
+
 
 class TestJson:
     """The output is an envelope: {at, directive, providers}.
@@ -159,6 +175,17 @@ class TestJson:
             "activeLimit", "resetsAt", "secondsRemaining",
             "windowSeconds", "pace",
         }
+
+    def test_provider_records_expose_installation_separately_from_errors(self):
+        absent = ProviderSnapshot(
+            key="claude", display_name="Claude", installed=False,
+            error="Claude CLI is not installed or not on PATH",
+        )
+        payload = build_payload([absent], "2026-08-13T12:00:00+00:00")
+        provider = payload["providers"][0]
+        assert provider["installed"] is False
+        assert "not installed" in provider["error"]
+        assert payload["directives"] == []
 
     def test_seconds_remaining_is_precomputed(self, capsys):
         main(["--demo", "--json"])
@@ -281,6 +308,35 @@ class TestExitCodes:
         monkeypatch.setattr("agents_fuel_gauge.cli.fetch_all", broken)
         assert main(["--check"]) == 1
         capsys.readouterr()
+
+    def test_an_optional_absent_provider_does_not_fail_a_good_reading(
+        self, monkeypatch, capsys
+    ):
+        async def one_provider(max_age=0):
+            absent = ProviderSnapshot(
+                key="claude", display_name="Claude", installed=False,
+                error="Claude CLI is not installed or not on PATH",
+            )
+            return [absent, demo_snapshots()[1]]
+
+        monkeypatch.setattr("agents_fuel_gauge.cli.fetch_all", one_provider)
+        assert main(["--check"]) == 0
+        assert "NOT_INSTALLED" in capsys.readouterr().out
+
+    def test_no_installed_providers_is_non_zero(self, monkeypatch, capsys):
+        async def no_providers(max_age=0):
+            return [
+                ProviderSnapshot(
+                    key=key, display_name=name, installed=False,
+                    error=f"{name} CLI is not installed or not on PATH",
+                )
+                for key, name in (("claude", "Claude"), ("codex", "Codex"))
+            ]
+
+        monkeypatch.setattr("agents_fuel_gauge.cli.fetch_all", no_providers)
+        assert main(["--json"]) == 1
+        payload = json.loads(capsys.readouterr().out)
+        assert [p["installed"] for p in payload["providers"]] == [False, False]
 
 
 class TestDemoMode:

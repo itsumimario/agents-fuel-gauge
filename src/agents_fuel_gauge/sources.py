@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -62,6 +63,27 @@ class RateLimited(SourceError):
     def __init__(self, message: str, retry_after: float | None = None) -> None:
         super().__init__(message)
         self.retry_after = retry_after
+
+
+def provider_cli_installed(provider: str) -> bool:
+    """Whether the official command can be launched from this environment.
+
+    Credentials alone are not installation evidence: they can survive an
+    uninstall for months. Conversely, a discoverable CLI that is signed out or
+    broken is still installed and should retain its panel with the useful
+    error. This check deliberately answers only the narrow installation
+    question and leaves every availability question to the normal fetch path.
+    """
+    return shutil.which(provider) is not None
+
+
+def _not_installed(provider: str, display_name: str) -> ProviderSnapshot:
+    return ProviderSnapshot(
+        key=provider,
+        display_name=display_name,
+        installed=False,
+        error=f"{display_name} CLI is not installed or not on PATH",
+    )
 
 
 async def _cached_get(
@@ -459,9 +481,15 @@ async def fetch_all(
     each. Pass 0 to force a live fetch.
     """
     async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+        async def fetch_if_installed(provider, display_name, fetcher):
+            if not provider_cli_installed(provider):
+                return _not_installed(provider, display_name)
+            return await fetcher(client, max_age)
+
         snapshots = list(
             await asyncio.gather(
-                fetch_claude(client, max_age), fetch_codex(client, max_age)
+                fetch_if_installed("claude", "Claude", fetch_claude),
+                fetch_if_installed("codex", "Codex", fetch_codex),
             )
         )
     # This is the one path shared by the TUI, --check, and --json. Recording

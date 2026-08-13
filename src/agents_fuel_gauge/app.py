@@ -102,14 +102,14 @@ def color_of(gauge: Gauge) -> str:
     return SEVERITY_COLOR.get(gauge.severity, "green")
 
 
-def _axis_label(timestamp: float, window_seconds: int) -> str:
-    """Three short wall-clock anchors are enough to orient a quota trace."""
+def _axis_label(timestamp: float, visible_seconds: float) -> str:
+    """Three short wall-clock anchors at the scale the user can actually see."""
     local = datetime.fromtimestamp(timestamp).astimezone()
-    return (
-        local.strftime("%a %d")
-        if window_seconds >= 86_400
-        else local.strftime("%H:%M")
-    )
+    if visible_seconds >= 2 * 86_400:
+        return local.strftime("%a %d")
+    if visible_seconds >= 86_400:
+        return local.strftime("%a %H:%M")
+    return local.strftime("%H:%M")
 
 
 def _segment_duration(seconds: float) -> str:
@@ -117,6 +117,40 @@ def _segment_duration(seconds: float) -> str:
     if seconds < 86_400:
         return f"{seconds / 3_600:.1f}h"
     return f"{seconds / 86_400:.1f}d"
+
+
+def _history_viewport(
+    gauge: Gauge,
+    samples: list[history.Sample],
+    full_window: bool,
+) -> tuple[float, float, float, float]:
+    """Return x-min, x-max, y-min, y-max for a history chart.
+
+    The complete quota window is useful context and a poor default on a phone:
+    when history starts near the end of a seven-day window, almost the whole
+    chart is empty. Detailed mode starts just before the first recorded sample,
+    keeps the reset point so the required chord survives, and crops the percent
+    scale to the actual and ideal lines visible in that interval. Full mode is
+    retained as an explicit comparison rather than making detail irreversible.
+    """
+    reset = gauge.resets_at.timestamp()
+    window = float(gauge.window_seconds)
+    opened = reset - window
+    percentages = [sample["pct"] for sample in samples]
+
+    if full_window:
+        return opened, reset, 0.0, max(100.0, max(percentages))
+
+    first_sample = max(opened, min(sample["t"] for sample in samples))
+    visible_seconds = max(1.0, reset - first_sample)
+    left_padding = min(first_sample - opened, visible_seconds * 0.05)
+    x_min = first_sample - left_padding
+
+    ideal_at_start = (x_min - opened) / window * 100.0
+    low = min(min(percentages), ideal_at_start)
+    high = max(100.0, max(percentages))
+    y_padding = max(0.5, (high - low) * 0.05)
+    return x_min, reset, max(0.0, low - y_padding), high + y_padding
 
 
 class GaugeBar(Static):
@@ -444,10 +478,16 @@ PLOTEXT_SEVERITY = {
 class UsageHistoryPlot(PlotextPlot):
     """A gauge trace against the two straight lines that give it context."""
 
-    def __init__(self, gauge: Gauge, samples: list[history.Sample]) -> None:
+    def __init__(
+        self,
+        gauge: Gauge,
+        samples: list[history.Sample],
+        full_window: bool = False,
+    ) -> None:
         super().__init__()
         self.gauge = gauge
         self.samples = samples
+        self.full_window = full_window
 
     def on_mount(self) -> None:
         super().on_mount()
@@ -455,11 +495,17 @@ class UsageHistoryPlot(PlotextPlot):
         reset = gauge.resets_at.timestamp()
         window = gauge.window_seconds
         opened = reset - window
-        midpoint = opened + window / 2
         xs = [sample["t"] for sample in self.samples]
         ys = [sample["pct"] for sample in self.samples]
+        x_min, x_max, y_min, y_max = _history_viewport(
+            gauge, self.samples, self.full_window
+        )
+        midpoint = x_min + (x_max - x_min) / 2
+        ideal_at_start = (x_min - opened) / window * 100
 
-        self.plt.plot([opened, reset], [0, 100], color="gray", style="dim")
+        self.plt.plot(
+            [x_min, reset], [ideal_at_start, 100], color="gray", style="dim"
+        )
         self.plt.plot(xs, ys, color=PLOTEXT_SEVERITY.get(gauge.severity, "green"))
         if gauge.percent < 100:
             # Dot markers keep the chord distinguishable from the trace when a
@@ -471,11 +517,19 @@ class UsageHistoryPlot(PlotextPlot):
         # Plotext's automatic ticks are dense enough to turn Unix timestamps
         # into a wall of digits. Start, middle, and reset answer the only time
         # questions the chart needs without competing with the trace.
-        ticks = [opened, midpoint, reset]
-        self.plt.xticks(ticks, [_axis_label(value, window) for value in ticks])
-        self.plt.yticks([0, 50, 100], ["0%", "50%", "100%"])
-        self.plt.xlim(opened, reset)
-        self.plt.ylim(0, max(100, max(ys)))
+        ticks = [x_min, midpoint, reset]
+        visible_seconds = x_max - x_min
+        self.plt.xticks(
+            ticks, [_axis_label(value, visible_seconds) for value in ticks]
+        )
+        y_midpoint = y_min + (y_max - y_min) / 2
+        y_ticks = [y_min, y_midpoint, y_max]
+        precision = 1 if y_max - y_min < 4 else 0
+        self.plt.yticks(
+            y_ticks, [f"{value:.{precision}f}%" for value in y_ticks]
+        )
+        self.plt.xlim(x_min, x_max)
+        self.plt.ylim(y_min, y_max)
         self.plt.grid(horizontal=True, vertical=False)
         self.plt.title(f"{gauge.label} · {gauge.percent:.0f}%")
 
@@ -483,9 +537,12 @@ class UsageHistoryPlot(PlotextPlot):
 class ProviderHistory(Vertical):
     """The most pressured gauge for one provider, with rate-regime evidence."""
 
-    def __init__(self, snapshot: ProviderSnapshot) -> None:
+    def __init__(
+        self, snapshot: ProviderSnapshot, full_window: bool = False
+    ) -> None:
         super().__init__(id=f"history-{snapshot.key}")
         self.snapshot = snapshot
+        self.full_window = full_window
         self.gauge = snapshot.tightest
         self.samples = (
             history.read_window(
@@ -512,7 +569,7 @@ class ProviderHistory(Vertical):
             )
             return
 
-        yield UsageHistoryPlot(gauge, self.samples)
+        yield UsageHistoryPlot(gauge, self.samples, self.full_window)
         remaining = gauge.resets_at.timestamp() - self.samples[-1]["t"]
         inferred = history.segments(self.samples)
         if not inferred or remaining <= 0:
@@ -540,6 +597,7 @@ class ProviderHistory(Vertical):
 
     def on_mount(self) -> None:
         self.border_title = self.snapshot.display_name
+        self.border_subtitle = "full window" if self.full_window else "detail"
 
 
 class FuelGaugeApp(App):
@@ -552,7 +610,8 @@ class FuelGaugeApp(App):
         ("q", "quit", "Quit"),
         ("r", "refresh_now", "Refresh"),
         ("t", "cycle_theme", "Theme"),
-        ("p", "toggle_history", "History"),
+        ("h", "toggle_history", "History"),
+        ("z", "toggle_history_zoom", "Zoom"),
     ]
 
     def __init__(self, interval: float = 60.0, fetcher=None) -> None:
@@ -564,6 +623,7 @@ class FuelGaugeApp(App):
         self.fetcher = fetcher or fetch_all
         self.snapshots: list[ProviderSnapshot] = []
         self.showing_history = False
+        self.history_full_window = False
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -573,7 +633,9 @@ class FuelGaugeApp(App):
         yield plots
         # Below both panels, as one key for both, so it reads as a key rather
         # than as a message about whichever panel it happens to sit next to.
-        yield Legend(id="legend")
+        legend = Legend(id="legend")
+        legend.display = False
+        yield legend
         yield Footer()
 
     def on_mount(self) -> None:
@@ -620,10 +682,45 @@ class FuelGaugeApp(App):
             return
 
         panels = self.query_one("#panels", VerticalScroll)
+        plots = self.query_one("#plots", VerticalScroll)
+        installed = [snapshot for snapshot in fetched if snapshot.installed]
+        installed_keys = {snapshot.key for snapshot in installed}
+
+        # A CLI can disappear while a long-running dashboard is open. Remove
+        # that provider just as decisively as we omit it on first launch; stale
+        # panels are useful for failed polls, not for uninstalled products.
+        for panel in list(self.query(ProviderPanel)):
+            if panel.snapshot.key not in installed_keys:
+                await panel.remove()
+
+        placeholders = list(panels.query("#no-providers"))
+        if not installed:
+            self.snapshots = []
+            self.showing_history = False
+            panels.display = True
+            plots.display = False
+            await plots.remove_children()
+            self.query_one(Legend).display = False
+            if not placeholders:
+                await panels.mount(
+                    Static(
+                        "no supported agent CLIs found — install Claude Code "
+                        "or Codex to begin",
+                        id="no-providers",
+                        classes="provider-empty",
+                    )
+                )
+            self.sub_title = ""
+            self._hide_cursor()
+            return
+
+        for placeholder in placeholders:
+            await placeholder.remove()
+
         # Keep the merged snapshots, not the raw fetch, so the status line and
         # the panels agree about carried-forward data.
         merged: list[ProviderSnapshot] = []
-        for snapshot in fetched:
+        for snapshot in installed:
             existing = self.query(f"#panel-{snapshot.key}")
             if existing:
                 panel = existing.first(ProviderPanel)
@@ -634,6 +731,7 @@ class FuelGaugeApp(App):
             merged.append(snapshot)
 
         self.snapshots = merged
+        self.query_one(Legend).display = not self.showing_history
         if self.showing_history:
             await self._refresh_plots()
 
@@ -660,16 +758,27 @@ class FuelGaugeApp(App):
         plots = self.query_one("#plots", VerticalScroll)
         await plots.remove_children()
         await plots.mount_all(
-            [ProviderHistory(snapshot) for snapshot in self.snapshots]
+            [
+                ProviderHistory(snapshot, self.history_full_window)
+                for snapshot in self.snapshots
+            ]
         )
 
     async def action_toggle_history(self) -> None:
+        if not self.snapshots:
+            return
         self.showing_history = not self.showing_history
         self.query_one("#panels", VerticalScroll).display = not self.showing_history
         self.query_one(Legend).display = not self.showing_history
         self.query_one("#plots", VerticalScroll).display = self.showing_history
         if self.showing_history:
             await self._refresh_plots()
+
+    async def action_toggle_history_zoom(self) -> None:
+        if not self.showing_history or not self.snapshots:
+            return
+        self.history_full_window = not self.history_full_window
+        await self._refresh_plots()
 
     def action_cycle_theme(self) -> None:
         self.theme = (

@@ -119,6 +119,9 @@ def render_plain(snapshots: list[ProviderSnapshot]) -> str:
     # actually have columns — an error-only result has none.
     rows: list[tuple[str, tuple[str, ...]]] = []
     for snap in snapshots:
+        if not snap.installed:
+            rows.append(("not_installed", (snap.key, snap.error or "not installed")))
+            continue
         if snap.error:
             rows.append(("error", (snap.key, snap.error)))
         governors = governing_indexes(snap)
@@ -177,7 +180,9 @@ def render_plain(snapshots: list[ProviderSnapshot]) -> str:
 
     out = []
     for kind, cells in rows:
-        if kind == "error":
+        if kind == "not_installed":
+            out.append(f"{cells[0].ljust(widths[0])}  NOT_INSTALLED  {cells[1]}")
+        elif kind == "error":
             out.append(f"{cells[0].ljust(widths[0])}  ERROR  {cells[1]}")
         else:
             out.append(
@@ -193,10 +198,14 @@ def render_pretty(snapshots: list[ProviderSnapshot], color: bool) -> str:
         head = snap.display_name
         if snap.subtitle:
             head += f"  ({snap.subtitle})"
-        head += f"  {format_age(snap.captured_at)}"
+        if snap.installed:
+            head += f"  {format_age(snap.captured_at)}"
         lines.append("")
         lines.append(f"{BOLD if color else ''}{head}{RESET if color else ''}")
 
+        if not snap.installed:
+            lines.append(f"  NOT INSTALLED  {snap.error or ''}".rstrip())
+            continue
         if snap.error:
             prefix = "stale — " if snap.stale else ""
             lines.append(f"  !  {prefix}{snap.error}")
@@ -363,7 +372,11 @@ def main(argv: list[str] | None = None) -> int:
         snapshots = asyncio.run(fetcher())
         _emit_once(snapshots, args)
         # Non-zero when anything failed, so `afg --check` composes in scripts.
-        return 0 if all(s.ok for s in snapshots) else 1
+        installed = [snapshot for snapshot in snapshots if snapshot.installed]
+        # Either CLI alone is enough. An optional provider that is not installed
+        # is metadata, not a failed reading; no installed providers at all still
+        # means the command could not produce quota data.
+        return 0 if installed and all(s.ok for s in installed) else 1
 
     from .app import FuelGaugeApp
 

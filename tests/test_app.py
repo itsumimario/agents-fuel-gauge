@@ -13,6 +13,8 @@ from agents_fuel_gauge.app import (
     ProviderHistory,
     ProviderPanel,
     UsageHistoryPlot,
+    _axis_label,
+    _history_viewport,
 )
 from agents_fuel_gauge.models import (
     PACE_ARROW,
@@ -120,9 +122,100 @@ async def test_panels_and_bars_mount(stub):
         assert len(app.query(GaugeBar)) == 4
 
 
-def test_history_binding_is_registered_for_the_footer():
+async def test_an_uninstalled_provider_has_no_tui_panel():
+    """A product the user does not have should consume no phone-screen space."""
+    absent = ProviderSnapshot(
+        key="claude", display_name="Claude", installed=False,
+        error="Claude CLI is not installed or not on PATH",
+    )
+
+    async def one_provider():
+        return [absent, _snapshots()[1]]
+
+    app = FuelGaugeApp(interval=3600, fetcher=one_provider)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        panels = list(app.query(ProviderPanel))
+        assert [panel.snapshot.key for panel in panels] == ["codex"]
+        assert [snapshot.key for snapshot in app.snapshots] == ["codex"]
+        assert not app.query("#panel-claude")
+
+
+async def test_no_installed_providers_gets_one_generic_empty_state():
+    """An empty dashboard should explain itself without drawing two errors."""
+    async def no_providers():
+        return [
+            ProviderSnapshot(
+                key=key, display_name=name, installed=False,
+                error=f"{name} CLI is not installed or not on PATH",
+            )
+            for key, name in (("claude", "Claude"), ("codex", "Codex"))
+        ]
+
+    app = FuelGaugeApp(interval=3600, fetcher=no_providers)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert not app.query(ProviderPanel)
+        empty = app.query_one("#no-providers")
+        assert "no supported agent CLIs" in empty.render().plain
+        assert app.query_one(Legend).display is False
+
+        await pilot.press("h")
+        await pilot.pause()
+        assert app.query_one("#panels").display is True
+        assert app.query_one("#plots").display is False
+
+
+def test_history_and_zoom_bindings_are_registered_for_the_footer():
     """Discoverability matters for a pane with no always-visible tab."""
-    assert ("p", "toggle_history", "History") in FuelGaugeApp.BINDINGS
+    assert ("h", "toggle_history", "History") in FuelGaugeApp.BINDINGS
+    assert ("z", "toggle_history_zoom", "Zoom") in FuelGaugeApp.BINDINGS
+    assert not any(key == "p" for key, _, _ in FuelGaugeApp.BINDINGS)
+
+
+def test_detailed_history_viewport_focuses_the_recorded_tail():
+    """A young trace near reset should not spend a phone screen on empty days."""
+    reset = NOW + timedelta(hours=1)
+    gauge = Gauge(
+        "7d", "all models", 95, reset, window_seconds=ONE_WEEK
+    )
+    samples = [
+        {"t": (NOW - timedelta(hours=2)).timestamp(), "pct": 94.0},
+        {"t": NOW.timestamp(), "pct": 95.0},
+    ]
+
+    x_min, x_max, y_min, y_max = _history_viewport(gauge, samples, False)
+
+    opened = reset.timestamp() - ONE_WEEK
+    assert x_min > opened + 6 * 86_400
+    assert x_max == reset.timestamp()
+    assert 90 < y_min < 95
+    assert y_max > 100
+
+
+def test_full_history_viewport_retains_the_original_context():
+    reset = NOW + timedelta(hours=1)
+    gauge = Gauge(
+        "7d", "all models", 95, reset, window_seconds=ONE_WEEK
+    )
+    samples = [
+        {"t": (NOW - timedelta(hours=2)).timestamp(), "pct": 94.0},
+        {"t": NOW.timestamp(), "pct": 95.0},
+    ]
+
+    x_min, x_max, y_min, y_max = _history_viewport(gauge, samples, True)
+
+    assert x_min == reset.timestamp() - ONE_WEEK
+    assert x_max == reset.timestamp()
+    assert (y_min, y_max) == (0, 100)
+
+
+def test_zoomed_axis_labels_follow_the_visible_span_not_the_quota_window():
+    """Three hours at the end of a week needs times, not one date repeated."""
+    timestamp = NOW.timestamp()
+    assert ":" in _axis_label(timestamp, 3 * 3_600)
+    assert ":" in _axis_label(timestamp, 36 * 3_600)
+    assert ":" not in _axis_label(timestamp, ONE_WEEK)
 
 
 def test_plot_severity_colors_are_names_plotext_actually_inks():
@@ -163,7 +256,7 @@ async def test_history_key_switches_views_and_mounts_provider_plots(
         plots = app.query_one("#plots")
         assert plots.display is False
 
-        await pilot.press("p")
+        await pilot.press("h")
         await pilot.pause()
 
         assert plots.display is True
@@ -176,7 +269,17 @@ async def test_history_key_switches_views_and_mounts_provider_plots(
             "not enough movement" in str(line.render()) for line in rates
         )
 
-        await pilot.press("p")
+        histories = list(app.query(ProviderHistory))
+        assert all(item.border_subtitle == "detail" for item in histories)
+        await pilot.press("z")
+        await pilot.pause()
+        assert app.history_full_window is True
+        assert all(
+            item.border_subtitle == "full window"
+            for item in app.query(ProviderHistory)
+        )
+
+        await pilot.press("h")
         await pilot.pause()
         assert plots.display is False
         assert app.query_one("#panels").display is True
@@ -210,7 +313,7 @@ async def test_history_readout_chains_regimes_and_judges_only_the_latest(
     app = FuelGaugeApp(interval=3600)
     async with app.run_test(size=(120, 30)) as pilot:
         await pilot.pause()
-        await pilot.press("p")
+        await pilot.press("h")
         await pilot.pause()
 
         line = app.query_one(".history-rate").render().plain
@@ -250,7 +353,7 @@ async def test_history_readout_leaves_a_steady_on_pace_regime_unmarked(
     app = FuelGaugeApp(interval=3600)
     async with app.run_test(size=(120, 30)) as pilot:
         await pilot.pause()
-        await pilot.press("p")
+        await pilot.press("h")
         await pilot.pause()
 
         line = app.query_one(".history-rate").render().plain
@@ -258,6 +361,40 @@ async def test_history_readout_leaves_a_steady_on_pace_regime_unmarked(
         assert re.search(r"14\.\d%/d", line)
         assert "↑" not in line and "↓" not in line
         assert line.endswith("· required 14.3%/d")
+
+
+async def test_both_history_ranges_render_at_phone_width(monkeypatch):
+    """Detail is the phone default; full context must remain a safe escape hatch."""
+    samples = _quantized_samples([(0.25, 20)])
+    snapshot = ProviderSnapshot(
+        key="claude",
+        display_name="Claude",
+        captured_at=NOW,
+        gauges=[
+            Gauge(
+                "7d", "all models", samples[-1]["pct"],
+                NOW + timedelta(hours=2), window_seconds=ONE_WEEK,
+            )
+        ],
+    )
+
+    async def fake_fetch_all():
+        return [snapshot]
+
+    monkeypatch.setattr(app_module, "fetch_all", fake_fetch_all)
+    monkeypatch.setattr(history, "read_window", lambda *args: samples)
+    app = FuelGaugeApp(interval=3600)
+    async with app.run_test(size=(42, 24)) as pilot:
+        await pilot.pause()
+        await pilot.press("h")
+        await pilot.pause()
+        assert app.query_one(ProviderHistory).border_subtitle == "detail"
+        assert "<svg" in app.export_screenshot()
+
+        await pilot.press("z")
+        await pilot.pause()
+        assert app.query_one(ProviderHistory).border_subtitle == "full window"
+        assert "<svg" in app.export_screenshot()
 
 
 async def test_history_view_explains_that_samples_have_not_accrued(
@@ -268,7 +405,7 @@ async def test_history_view_explains_that_samples_have_not_accrued(
     app = FuelGaugeApp(interval=3600)
     async with app.run_test() as pilot:
         await pilot.pause()
-        await pilot.press("p")
+        await pilot.press("h")
         await pilot.pause()
 
         placeholders = app.query(".history-empty")

@@ -57,6 +57,14 @@ UsageHistoryPlot {
     color: $text-muted;
 }
 
+.provider-empty {
+    height: 1fr;
+    content-align: center middle;
+    color: $text-muted;
+    text-align: center;
+    padding: 0 2;
+}
+
 /* `auto`, not 1: three segments plus the required rate outgrow a phone-width
    terminal, and a cropped rate line silently drops the verdict arrow — the one
    character the line exists to carry. */

@@ -592,6 +592,16 @@ class ProviderSnapshot:
     error: str | None = None
     stale: bool = False
     """True when `gauges` were carried over from an earlier, successful poll."""
+    installed: bool = True
+    """Whether the provider's official CLI is discoverable on this system.
+
+    Absence is different from failure. A CLI that is installed but signed out,
+    rate limited, or temporarily offline still belongs on screen with its
+    explanation; a CLI the user does not have should not consume a whole panel
+    explaining a product they do not use. Machine-readable output keeps both
+    records and exposes this bit so integrations can tell those cases apart.
+    Kept after the original fields so positional callers retain their meaning.
+    """
 
     @property
     def ok(self) -> bool:
@@ -603,7 +613,13 @@ class ProviderSnapshot:
         A transient 429 or a dropped connection should not blank the panel —
         stale data with a visible warning is far more useful than nothing.
         """
-        if self.ok or previous is None or not previous.gauges:
+        if (
+            not self.installed
+            or self.ok
+            or previous is None
+            or not previous.installed
+            or not previous.gauges
+        ):
             return self
         self.gauges = previous.gauges
         self.plan = self.plan or previous.plan
@@ -643,6 +659,7 @@ class ProviderSnapshot:
             "plan": self.plan,
             "account": self.account,
             "capturedAt": self.captured_at.isoformat() if self.captured_at else None,
+            "installed": self.installed,
             "error": self.error,
             "stale": self.stale,
             "gauges": [

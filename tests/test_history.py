@@ -251,9 +251,37 @@ async def test_fetch_all_records_at_the_shared_caller_choke_point(monkeypatch):
     calls = []
     monkeypatch.setattr(sources, "fetch_claude", fake_claude)
     monkeypatch.setattr(sources, "fetch_codex", fake_codex)
+    monkeypatch.setattr(sources, "provider_cli_installed", lambda provider: True)
     monkeypatch.setattr(sources.history, "record_snapshots", calls.append)
 
     snapshots = await sources.fetch_all(max_age=123)
 
     assert calls == [snapshots]
     assert [snapshot.key for snapshot in snapshots] == ["claude", "codex"]
+
+
+async def test_fetch_all_skips_a_provider_whose_cli_is_not_installed(monkeypatch):
+    """Absence must not trigger credential reads or network requests."""
+    calls = []
+
+    async def fake_claude(client, max_age):
+        raise AssertionError("an absent CLI must never reach its fetcher")
+
+    async def fake_codex(client, max_age):
+        calls.append(max_age)
+        return ProviderSnapshot(key="codex", display_name="Codex")
+
+    monkeypatch.setattr(sources, "fetch_claude", fake_claude)
+    monkeypatch.setattr(sources, "fetch_codex", fake_codex)
+    monkeypatch.setattr(
+        sources,
+        "provider_cli_installed",
+        lambda provider: provider == "codex",
+    )
+
+    claude, codex = await sources.fetch_all(max_age=123)
+
+    assert claude.installed is False
+    assert "not installed" in claude.error
+    assert codex.installed is True
+    assert calls == [123]
