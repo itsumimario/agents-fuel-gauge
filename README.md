@@ -198,8 +198,8 @@ before the trace or future days that have not happened. Press `z` for the
     <th>Full — the complete quota window</th>
   </tr>
   <tr>
-    <td><img alt="Recorded history view tightly framing synthetic Claude and Codex usage" src="docs/history-recorded-dark.png"></td>
-    <td><img alt="Full history view showing synthetic Claude and Codex usage in complete quota windows" src="docs/history-full-dark.png"></td>
+    <td><img alt="Recorded history view tightly framing the synthetic Claude usage trace" src="docs/history-recorded-dark.png"></td>
+    <td><img alt="Full history view showing the same synthetic Claude trace in its complete quota window" src="docs/history-full-dark.png"></td>
   </tr>
 </table>
 
@@ -216,7 +216,7 @@ already own their viewports.
   <img alt="Details history view showing three newest-first synthetic Claude rate segments" src="docs/history-details-dark.png" width="900">
 </p>
 
-<p align="center"><sub>All README history is deterministic synthetic demo data; no account history is read.</sub></p>
+<p align="center"><sub>Recorded, Full, and Details all show the same deterministic synthetic Claude trace; no account history is read.</sub></p>
 
 The graph legend decodes the solid usage trace (green normal, orange warning,
 red critical), the dim gray ideal-budget line, and the green dotted path needed

@@ -3,6 +3,15 @@
 Notable user-facing changes to agents-fuel-gauge are recorded here. Releases
 before 0.8.0 were documented in the Git commit history.
 
+## 0.10.1 - 2026-08-13
+
+### Changed
+
+- Reworked the synthetic history screenshots around one directly comparable
+  Claude trace: sustained heavy use, a sparse quiet stretch, and a short burst
+  followed by a long plateau. Recorded, Full, and Details now show that same
+  sample series so the differences between view modes are clear.
+
 ## 0.10.0 - 2026-08-13
 
 ### Added

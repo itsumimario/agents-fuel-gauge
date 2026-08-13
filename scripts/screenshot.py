@@ -100,13 +100,13 @@ def synthetic_history():
     return snapshots, {
         ("claude", "7d Fable"): synthetic_series(
             snapshots[0].captured_at.timestamp(),
-            25.2,
-            [(1.2, 24), (1.3, 7), (2.0, 14)],
-        ),
-        ("codex", "7d all models"): synthetic_series(
-            snapshots[1].captured_at.timestamp(),
-            15.0,
-            [(1.4, 6), (1.1, 18), (2.2, 8.5)],
+            36.7,
+            [
+                (1.25, 32),  # sustained heavy use: many closely spaced ticks
+                (1.5, 2.2),  # a quiet stretch: only a few isolated ticks
+                (0.5, 22),  # one short burst before usage stops entirely
+                (1.25, 0),  # silence extends the newest inferred segment
+            ],
         ),
     }
 
@@ -121,7 +121,9 @@ async def shoot(
     snapshots, generated = synthetic_history()
 
     async def fetch_synthetic():
-        return snapshots[:1] if view == "details" else snapshots
+        # Every history screenshot follows this same provider and sample set,
+        # so Recorded, Full, and Details are directly comparable.
+        return snapshots[:1]
 
     original_read_window = history.read_window
     original_no_color = os.environ.pop("NO_COLOR", None)
