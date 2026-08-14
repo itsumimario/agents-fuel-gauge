@@ -3,6 +3,25 @@
 Notable user-facing changes to agents-fuel-gauge are recorded here. Releases
 before 0.8.0 were documented in the Git commit history.
 
+## 0.13.0 - 2026-08-14
+
+### Added
+
+- Added a cross-process provider request lock with a post-lock cache check, so
+  multiple dashboards, scripts, or simultaneous manual refreshes share one
+  upstream request instead of racing into the same rate limit.
+- Rate-limit incidents now retain the triggering PID, automatic/manual origin,
+  backoff level, and server/adaptive source. Warnings expose the useful cause
+  and retry timing while keeping the last successful reading visible.
+
+### Changed
+
+- The normal dashboard interval and shared-cache freshness default are now five
+  minutes. Countdown and age displays still update locally every second.
+- Repeating 429 incidents now back off adaptively from 2 minutes through 60
+  minutes, even when an intermittent success occurs between failures. A later
+  explicit `r` refresh remains a single recovery probe.
+
 ## 0.12.1 - 2026-08-13
 
 ### Changed
