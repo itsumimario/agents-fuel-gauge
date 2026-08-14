@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 import shutil
 from dataclasses import replace
@@ -86,6 +87,46 @@ def _not_installed(provider: str, display_name: str) -> ProviderSnapshot:
     )
 
 
+def _cached_result(
+    provider: str, max_age: float
+) -> tuple[dict, float, str | None] | None:
+    """Return a reusable response/backoff, or None when a live fetch may run."""
+    if max_age > 0:
+        fresh, _ = cache.load(provider, max_age)
+        if fresh is not None:
+            return fresh, cache.load_stale(provider)[1], None
+
+    waiting = cache.blocked_for(provider)
+    if waiting <= 0 or max_age <= 0:
+        return None
+    stale, age = cache.load_stale(provider)
+    warning = _rate_limit_warning(provider, waiting, current=False)
+    if stale is not None:
+        return stale, age, warning
+    raise RateLimited(warning, retry_after=waiting)
+
+
+def _rate_limit_warning(provider: str, waiting: float, *, current: bool) -> str:
+    """Make a 429 explain which local request caused the current incident."""
+    prefix = "rate limited (429)" if current else "rate limited"
+    status = cache.rate_limit_status(provider)
+    if not status:
+        return f"{prefix} — retrying in {int(waiting)}s"
+
+    mode = "manual refresh" if status.get("mode") == "manual" else "automatic poll"
+    pid = status.get("pid")
+    level = status.get("level")
+    remaining = (
+        f"{math.ceil(waiting / 60)}m"
+        if waiting >= 60
+        else f"{math.ceil(waiting)}s"
+    )
+    return (
+        f"{prefix} after {mode} by PID {pid} — retrying in {remaining} "
+        f"(backoff {level})"
+    )
+
+
 async def _cached_get(
     client: httpx.AsyncClient,
     provider: str,
@@ -100,53 +141,66 @@ async def _cached_get(
     served because a live request could not be made, so callers never pass off
     a rate-limited or offline reading as merely cached.
     """
-    fresh, _ = cache.load(provider, max_age)
-    if fresh is not None:
-        age = 0.0 if max_age <= 0 else cache.load_stale(provider)[1]
-        return fresh, age, None
+    attempt_started = datetime.now(timezone.utc).timestamp()
+    if cached := _cached_result(provider, max_age):
+        return cached
 
     # Automatic polls never knock on a door the server has explicitly closed.
     # An explicit forced refresh is different: another client may already have
     # proved the provider recovered, and a persisted deadline cannot observe
     # that. Let the one user-requested probe through; a repeated 429 replaces
     # the deadline and still protects every subsequent automatic poll.
-    waiting = cache.blocked_for(provider)
-    if waiting > 0 and max_age > 0:
-        stale, age = cache.load_stale(provider)
-        if stale is not None:
-            return stale, age, f"rate limited — retrying in {int(waiting)}s"
-        raise RateLimited(
-            f"rate limited — retrying in {int(waiting)}s", retry_after=waiting
-        )
-
+    request_lock = await asyncio.to_thread(cache.acquire_request_lock, provider)
     try:
-        response = await client.get(url, headers=headers)
-    except httpx.HTTPError as exc:
-        stale, age = cache.load_stale(provider)
-        if stale is not None:
-            return stale, age, f"network error: {exc.__class__.__name__}"
-        raise
+        # Another process may have filled the cache or received a 429 while
+        # this caller waited. Recheck only after owning the request slot.
+        if cached := _cached_result(provider, max_age):
+            return cached
+        if max_age <= 0:
+            fresh, age = cache.load_fetched_since(provider, attempt_started)
+            if fresh is not None:
+                return fresh, age, None
+            incident = cache.rate_limit_status(provider)
+            incident_at = incident.get("at") if incident else None
+            if (
+                isinstance(incident_at, (int, float))
+                and incident_at >= attempt_started
+            ):
+                waiting = cache.blocked_for(provider)
+                warning = _rate_limit_warning(provider, waiting, current=False)
+                stale, age = cache.load_stale(provider)
+                if stale is not None:
+                    return stale, age, warning
+                raise RateLimited(warning, retry_after=waiting)
 
-    if response.status_code == 429:
-        retry = response.headers.get("retry-after")
-        seconds = float(retry) if (retry or "").replace(".", "", 1).isdigit() else None
-        cache.block(provider, seconds)
-        waiting = cache.blocked_for(provider)
-        stale, age = cache.load_stale(provider)
-        if stale is not None:
-            return (
-                stale,
-                age,
-                f"rate limited (429) — retrying in {int(waiting)}s",
+        try:
+            response = await client.get(url, headers=headers)
+        except httpx.HTTPError as exc:
+            stale, age = cache.load_stale(provider)
+            if stale is not None:
+                return stale, age, f"network error: {exc.__class__.__name__}"
+            raise
+
+        if response.status_code == 429:
+            retry = response.headers.get("retry-after")
+            seconds = (
+                float(retry)
+                if (retry or "").replace(".", "", 1).isdigit()
+                else None
             )
-        raise RateLimited(
-            f"rate limited (429) — retrying in {int(waiting)}s",
-            retry_after=waiting,
-        )
+            cache.block(provider, seconds, forced=max_age <= 0)
+            waiting = cache.blocked_for(provider)
+            warning = _rate_limit_warning(provider, waiting, current=True)
+            stale, age = cache.load_stale(provider)
+            if stale is not None:
+                return stale, age, warning
+            raise RateLimited(warning, retry_after=waiting)
 
-    payload = _raise_for_status(response, provider)
-    cache.store(provider, payload)
-    return payload, 0.0, None
+        payload = _raise_for_status(response, provider)
+        cache.store(provider, payload)
+        return payload, 0.0, None
+    finally:
+        await asyncio.to_thread(cache.release_request_lock, request_lock)
 
 
 def tidy_path(path: Path) -> str:

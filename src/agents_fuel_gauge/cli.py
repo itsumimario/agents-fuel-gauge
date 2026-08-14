@@ -278,8 +278,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="print one reading as JSON and exit (for scripts and status bars)",
     )
     parser.add_argument(
-        "-i", "--interval", type=float, default=60.0,
-        help=f"TUI refresh seconds (default: 60, minimum: {MIN_INTERVAL:.0f})",
+        "-i", "--interval", type=float, default=cache.DEFAULT_POLL_INTERVAL,
+        help=(
+            f"TUI refresh seconds (default: {cache.DEFAULT_POLL_INTERVAL:.0f}, "
+            f"minimum: {MIN_INTERVAL:.0f})"
+        ),
     )
     parser.add_argument(
         "--no-color", action="store_true", help="never emit ANSI colour",
@@ -299,7 +302,7 @@ def build_parser() -> argparse.ArgumentParser:
             f"reuse a cached reading this fresh instead of calling the API "
             f"(default: {cache.DEFAULT_MAX_AGE:.0f}). The cache is shared "
             f"between all afg processes, so a status bar polling every second "
-            f"still costs one request a minute."
+            f"still costs one request every five minutes."
         ),
     )
     parser.add_argument(

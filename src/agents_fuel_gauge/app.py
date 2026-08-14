@@ -14,7 +14,7 @@ from textual.containers import Vertical, VerticalScroll
 from textual.widgets import Footer, Header, Static
 from textual_plotext import PlotextPlot
 
-from . import history
+from . import cache, history
 from .models import (
     PACE_ARROW,
     PACE_TOLERANCE,
@@ -877,7 +877,9 @@ class FuelGaugeApp(App):
         ("o", "command_palette", "Options"),
     ]
 
-    def __init__(self, interval: float = 60.0, fetcher=None) -> None:
+    def __init__(
+        self, interval: float = cache.DEFAULT_POLL_INTERVAL, fetcher=None
+    ) -> None:
         super().__init__()
         self.interval = interval
         # Injectable so --demo and the screenshot script can supply synthetic

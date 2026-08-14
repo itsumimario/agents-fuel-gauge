@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from agents_fuel_gauge import cache
 from agents_fuel_gauge.models import (
     ProviderSnapshot,
     format_age,
@@ -93,6 +94,32 @@ async def test_forced_refresh_probes_past_a_stale_backoff(monkeypatch):
     assert client.calls == 1
     assert (payload, age, warning) == ({"usage": 0}, 0.0, None)
     assert stored == [("claude", {"usage": 0})]
+
+
+async def test_429_warning_identifies_the_request_that_triggered_it(
+    tmp_path, monkeypatch
+):
+    class RateLimitedResponse:
+        status_code = 429
+        headers = {}
+
+    class RateLimitedClient:
+        async def get(self, *args, **kwargs):
+            return RateLimitedResponse()
+
+    monkeypatch.setenv("AFG_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(cache.os, "getpid", lambda: 4321)
+    cache.store("claude", {"usage": 42})
+
+    payload, _, warning = await _cached_get(
+        RateLimitedClient(), "claude", "https://example.invalid", {}, 0
+    )
+
+    assert payload == {"usage": 42}
+    assert warning == (
+        "rate limited (429) after manual refresh by PID 4321 — "
+        "retrying in 2m (backoff 1)"
+    )
 
 # Trimmed from a live GET /api/oauth/usage response.
 CLAUDE_PAYLOAD = {

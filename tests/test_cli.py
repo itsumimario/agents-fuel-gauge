@@ -10,9 +10,26 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from agents_fuel_gauge.cli import build_payload, main, render_plain, render_pretty
+from agents_fuel_gauge import cache
+from agents_fuel_gauge.app import FuelGaugeApp
+from agents_fuel_gauge.cli import (
+    build_parser,
+    build_payload,
+    main,
+    render_plain,
+    render_pretty,
+)
 from agents_fuel_gauge.demo import demo_snapshots
 from agents_fuel_gauge.models import Gauge, ProviderSnapshot
+
+
+def test_default_polling_contract_is_five_minutes():
+    args = build_parser().parse_args([])
+
+    assert cache.DEFAULT_MAX_AGE == 300
+    assert args.interval == 300
+    assert args.max_age == 300
+    assert FuelGaugeApp().interval == 300
 
 
 class TestPlain:

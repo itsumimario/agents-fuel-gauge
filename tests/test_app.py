@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from agents_fuel_gauge import app as app_module, history
+from agents_fuel_gauge import app as app_module, cache, history
 from agents_fuel_gauge.app import (
     FuelGaugeApp,
     GaugeBar,
@@ -137,7 +137,7 @@ def stub(monkeypatch):
     """Swap the network call for a controllable fake."""
     state = {"snapshots": _snapshots()}
 
-    async def fake_fetch_all(max_age=60.0):
+    async def fake_fetch_all(max_age=cache.DEFAULT_MAX_AGE):
         return state["snapshots"]
 
     monkeypatch.setattr(app_module, "fetch_all", fake_fetch_all)
@@ -924,7 +924,7 @@ async def test_refresh_updates_in_place_without_remounting(stub):
 async def test_refresh_key_bypasses_the_normal_cache(monkeypatch):
     requested_ages = []
 
-    async def fake_fetch_all(max_age=60.0):
+    async def fake_fetch_all(max_age=cache.DEFAULT_MAX_AGE):
         requested_ages.append(max_age)
         return _snapshots()
 
@@ -935,7 +935,7 @@ async def test_refresh_key_bypasses_the_normal_cache(monkeypatch):
         await pilot.press("r")
         await pilot.pause()
 
-    assert requested_ages == [60.0, 0]
+    assert requested_ages == [300.0, 0]
 
 
 async def test_refresh_rebuilds_when_a_scoped_limit_disappears(stub):

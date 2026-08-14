@@ -1,18 +1,18 @@
 """On-disk response cache and 429 backoff.
 
 The vendor usage endpoints are rate limited far below what a dashboard wants.
-A 60-second refresh plus a status bar plus a couple of manual `afg --check`
-runs is enough to earn a 429, and the limit is on *their* side, so polling
-faster never helps.
+A dashboard plus a status bar plus a couple of manual `afg --check` runs can
+earn a 429, and the limit is on *their* side, so polling faster never helps.
 
-Two mechanisms, both shared across processes via files:
+Three mechanisms, all shared across processes via files:
 
 * **Cache.** Every fetch stores the raw response. Any fetch within `max_age`
-  reuses it instead of making a request, so ten callers a minute cost one
-  request rather than ten.
-* **Backoff.** A 429 records when the server said to come back, and until then
-  no request is attempted at all — retrying into a closed door is what turns
-  one 429 into a stream of them.
+  reuses it instead of making a request, so frequent callers cost one request
+  every five minutes rather than one request each.
+* **Single-flight.** A provider lock and post-lock cache check ensure processes
+  crossing an expiry boundary together issue one upstream request between them.
+* **Backoff.** A 429 records its local cause and an adaptive retry deadline.
+  Until then automatic polling does not knock on the closed door again.
 
 Raw payloads are cached rather than parsed snapshots so that a code change to
 the parser takes effect immediately instead of being masked by stale objects.
@@ -24,14 +24,23 @@ import json
 import os
 import tempfile
 import time
+from contextlib import suppress
 from pathlib import Path
+from typing import TextIO
 
-# Default freshness. Quota numbers move slowly; a minute-old reading is fine
-# and costs nothing, whereas a fresh one can cost you the next ten.
-DEFAULT_MAX_AGE = 60.0
+import fcntl
+
+# Default freshness and dashboard polling cadence. Quota numbers move slowly;
+# a five-minute reading remains useful while staying clear of the provider's
+# rolling request limits under ordinary use.
+DEFAULT_POLL_INTERVAL = 300.0
+DEFAULT_MAX_AGE = DEFAULT_POLL_INTERVAL
 
 # Applied when a 429 arrives without a Retry-After header.
 DEFAULT_BACKOFF = 120.0
+MAX_BACKOFF = 3_600.0
+BACKOFF_DECAY = 3_600.0
+MAX_BACKOFF_LEVEL = 6
 
 
 def cache_dir() -> Path:
@@ -44,6 +53,34 @@ def cache_dir() -> Path:
 
 def _path(provider: str) -> Path:
     return cache_dir() / f"{provider}.json"
+
+
+def _lock_path(provider: str) -> Path:
+    return cache_dir() / f"{provider}.lock"
+
+
+def acquire_request_lock(provider: str) -> TextIO | None:
+    """Block until this process owns the provider's upstream request slot."""
+    directory = cache_dir()
+    handle = None
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        handle = _lock_path(provider).open("a+", encoding="utf-8")
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        return handle
+    except OSError:
+        if handle is not None:
+            handle.close()
+        return None
+
+
+def release_request_lock(handle: TextIO | None) -> None:
+    """Release a request slot; closing also releases it after exceptions."""
+    if handle is None:
+        return
+    with suppress(OSError):
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    handle.close()
 
 
 def _read(provider: str) -> dict:
@@ -93,6 +130,22 @@ def load_stale(provider: str) -> tuple[dict | None, float]:
     return payload, max(0.0, time.time() - fetched_at)
 
 
+def load_fetched_since(
+    provider: str, earliest: float
+) -> tuple[dict | None, float]:
+    """Return a response another caller fetched after this attempt began."""
+    record = _read(provider)
+    payload = record.get("payload")
+    fetched_at = record.get("fetched_at")
+    if (
+        payload is None
+        or not isinstance(fetched_at, (int, float))
+        or fetched_at < earliest
+    ):
+        return None, float("inf")
+    return payload, max(0.0, time.time() - fetched_at)
+
+
 def store(provider: str, payload: dict) -> None:
     record = _read(provider)
     record.update({"payload": payload, "fetched_at": time.time()})
@@ -108,9 +161,37 @@ def blocked_for(provider: str) -> float:
     return max(0.0, retry_after - time.time())
 
 
-def block(provider: str, seconds: float | None) -> None:
+def rate_limit_status(provider: str) -> dict | None:
+    """Describe the most recent 429, retained even after a later success."""
+    status = _read(provider).get("last_rate_limit")
+    return status if isinstance(status, dict) else None
+
+
+def block(provider: str, seconds: float | None, *, forced: bool = False) -> None:
+    """Record a 429 with incident-aware exponential backoff metadata."""
     record = _read(provider)
-    record["retry_after"] = time.time() + (seconds or DEFAULT_BACKOFF)
+    now = time.time()
+    previous = record.get("last_rate_limit")
+    previous_at = previous.get("at") if isinstance(previous, dict) else None
+    previous_level = previous.get("level") if isinstance(previous, dict) else None
+    repeating = (
+        isinstance(previous_at, (int, float))
+        and isinstance(previous_level, int)
+        and now - previous_at <= BACKOFF_DECAY
+    )
+    level = min(previous_level + 1, MAX_BACKOFF_LEVEL) if repeating else 1
+    adaptive = min(DEFAULT_BACKOFF * (2 ** (level - 1)), MAX_BACKOFF)
+    server = seconds if isinstance(seconds, (int, float)) and seconds > 0 else 0.0
+    duration = max(adaptive, server)
+    record["retry_after"] = now + duration
+    record["last_rate_limit"] = {
+        "at": now,
+        "seconds": duration,
+        "pid": os.getpid(),
+        "mode": "manual" if forced else "automatic",
+        "source": "server" if server >= adaptive else "adaptive",
+        "level": level,
+    }
     _write(provider, record)
 
 
