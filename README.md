@@ -172,12 +172,13 @@ The footer always names the destination of a key press. In History, the panel
 border and subtitle name the currently selected provider, meter, range, and
 layout.
 
-Refreshes every 60s (`-i` to change, 15s minimum). Automatic polls respect a
-provider-requested rate-limit backoff. `r` is an explicit live probe: it
-bypasses both AFG's one-minute response cache and a persisted backoff that may
-have become obsolete. If the provider still returns 429, AFG records the new
-deadline and keeps the last known numbers behind a warning that explains the
-failure and when automatic polling will retry.
+Refreshes every five minutes (`-i` to change, 15s minimum); ages and reset
+countdowns still tick locally every second. `r` is an explicit live probe: it
+bypasses both AFG's five-minute response cache and a persisted backoff that may
+have become obsolete. If the provider still returns 429, AFG keeps the last
+known numbers and shows which PID triggered it, whether it was an automatic
+poll or manual refresh, and when automatic polling will retry.
+
 At phone widths the clickable key buttons wrap onto a second row instead of
 scrolling off-screen.
 
@@ -394,7 +395,7 @@ afg --json | jq -r '.providers[].gauges[] | select(.activeLimit)
 flushed immediately — so anything that can read a pipe can subscribe:
 
 ```sh
-afg --watch --json -i 60 | while read -r line; do
+afg --watch --json | while read -r line; do
   jq -r '.directives[] | select(.governs and .verdict == "slow_down")
          | "throttle \(.provider)/\(.label) to \(.effectiveRateAdjustment)x"' <<<"$line"
 done
@@ -405,14 +406,21 @@ That's the whole mechanism: no daemon, no socket, no broker.
 ### Rate limiting
 
 The vendor usage endpoints are themselves rate-limited, and polling them hard
-earns a 429 long before your real quota runs out. So readings are cached on
-disk and shared between every `afg` process: a status bar polling once a second
-still costs one request a minute. A 429 is recorded with its `Retry-After`, and
-nothing is attempted until it expires — retrying into a closed door is what
-turns one 429 into a stream of them.
+earns a 429 long before your real quota runs out. Readings are therefore cached
+on disk and shared between every `afg` process: even a status bar checking once
+a second normally costs one request every five minutes. A cross-process lock
+also collapses callers that reach an expired cache together into one upstream
+request, including simultaneous presses of `r`.
+
+A 429 records its `Retry-After` when supplied, plus the local PID and whether
+an automatic poll or manual refresh triggered it. Without a longer server
+deadline, a repeating incident backs off for 2, 4, 8, 16, 32, then 60 minutes;
+a brief success does not immediately forget the pattern. Automatic polls wait
+out that deadline. A later `r` remains one deliberate recovery probe, so it can
+confirm that a provider recovered without opening the door to every caller.
 
 ```sh
-afg --max-age 300     # reuse a reading up to 5 minutes old
+afg --max-age 300     # the default: reuse a reading up to 5 minutes old
 afg --no-cache        # always call the API (can earn you a 429)
 afg --clear-cache     # drop cached readings and any standing backoff
 ```
