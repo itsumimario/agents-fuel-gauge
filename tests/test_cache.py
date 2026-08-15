@@ -200,7 +200,7 @@ def test_repeated_429_after_success_increases_backoff_and_retains_cause(
         "level": 2,
     }
 
-    for expected, level in ((480, 3), (960, 4), (1_920, 5), (3_600, 6)):
+    for expected, level in ((480, 3), (900, 4)):
         clock[0] += 60
         cache.store("claude", {"usage": 42})
         clock[0] += 60
@@ -210,8 +210,8 @@ def test_repeated_429_after_success_increases_backoff_and_retains_cause(
 
     clock[0] += 60
     cache.block("claude", None, forced=False)
-    assert cache.blocked_for("claude") == 3_600
-    assert cache.rate_limit_status("claude")["level"] == 6
+    assert cache.blocked_for("claude") == 900
+    assert cache.rate_limit_status("claude")["level"] == 4
 
     cache.block("codex", 900, forced=True)
     assert cache.blocked_for("codex") == 900

@@ -38,9 +38,9 @@ DEFAULT_MAX_AGE = DEFAULT_POLL_INTERVAL
 
 # Applied when a 429 arrives without a Retry-After header.
 DEFAULT_BACKOFF = 120.0
-MAX_BACKOFF = 3_600.0
+MAX_BACKOFF = 900.0
 BACKOFF_DECAY = 3_600.0
-MAX_BACKOFF_LEVEL = 6
+MAX_BACKOFF_LEVEL = 4
 
 
 def cache_dir() -> Path:

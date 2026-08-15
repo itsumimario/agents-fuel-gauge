@@ -47,6 +47,9 @@ async def test_cached_get_explains_stale_data_during_backoff(monkeypatch):
     monkeypatch.setattr(
         "agents_fuel_gauge.sources.cache.blocked_for", lambda *args: 125.9
     )
+    monkeypatch.setattr(
+        "agents_fuel_gauge.sources.cache.rate_limit_status", lambda *args: None
+    )
 
     payload, age, warning = await _cached_get(
         _NoRequestClient(), "claude", "https://example.invalid", {}, 60
