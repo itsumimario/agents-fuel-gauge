@@ -216,7 +216,22 @@ class TestRecommendation:
         assert payload["schema"] == "afg.minion-recommendation/v1"
         assert payload["recommendation"] in {"sol", "opus-5"}
         assert (payload["vendor"], payload["model"]) == ("codex", "gpt-5.6-sol")
+        assert payload["cli_model"] == "gpt-5.6-sol"
         assert set(payload["candidates"]) == {"sol", "opus-5"}
+        assert payload["candidates"]["sol"]["cli_model"] == "gpt-5.6-sol"
+        assert (
+            payload["candidates"]["opus-5"]["cli_model"]
+            == "claude-opus-5"
+        )
+
+    def test_opus_recommendation_publishes_the_exact_claude_cli_model(self):
+        data = snapshots(sol=gauge(60, 0.5), opus=gauge(20, 0.5))
+
+        payload = recommend_minion(data, now=NOW).to_dict()
+
+        assert payload["recommendation"] == "opus-5"
+        assert payload["model"] == "opus-5"
+        assert payload["cli_model"] == "claude-opus-5"
 
 
 class TestRecommendationCli:
@@ -265,6 +280,11 @@ class TestRecommendationCli:
         payload = json.loads(capsys.readouterr().out)
         assert payload["error"]["code"] == "no_usable_candidate"
         assert "recommendation" not in payload
+        assert payload["candidates"]["sol"]["cli_model"] == "gpt-5.6-sol"
+        assert (
+            payload["candidates"]["opus-5"]["cli_model"]
+            == "claude-opus-5"
+        )
 
     def test_invalid_duration_fails_before_fetching(self, monkeypatch):
         def explode(*args, **kwargs):

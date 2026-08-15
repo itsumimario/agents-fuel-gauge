@@ -34,12 +34,17 @@ class CandidateSpec:
     name: str
     provider: str
     model: str
+    cli_model: str
     scope_tokens: tuple[str, ...]
 
 
 CANDIDATES = {
-    "sol": CandidateSpec("sol", "codex", "gpt-5.6-sol", ("sol",)),
-    "opus-5": CandidateSpec("opus-5", "claude", "opus-5", ("opus",)),
+    "sol": CandidateSpec(
+        "sol", "codex", "gpt-5.6-sol", "gpt-5.6-sol", ("sol",)
+    ),
+    "opus-5": CandidateSpec(
+        "opus-5", "claude", "opus-5", "claude-opus-5", ("opus",)
+    ),
 }
 
 
@@ -136,6 +141,10 @@ class CandidateAssessment:
         return {
             "provider": self.spec.provider,
             "model": self.spec.model,
+            # `model` is AFG's stable vocabulary. This is the exact identifier
+            # the vendor CLI accepts, so launchers never have to guess or keep
+            # their own opus-5 -> claude-opus-5 translation table.
+            "cli_model": self.spec.cli_model,
             "installed": self.installed,
             "dataUsable": self.data_usable,
             "available": self.available,
@@ -177,6 +186,7 @@ class MinionRecommendation:
             "recommendation": self.recommendation,
             "vendor": self.spec.provider,
             "model": self.spec.model,
+            "cli_model": self.spec.cli_model,
             "effort": self.effort,
             "expectedDurationSeconds": (
                 None

@@ -122,6 +122,12 @@ without emitting either value when neither candidate has usable, available
 quota data. It never guesses through missing data or recommends an already
 exhausted candidate.
 
+Those values are AFG's stable policy vocabulary, not necessarily identifiers a
+vendor CLI accepts. JSON consumers should launch with `vendor` and `cli_model`:
+for example, the Opus recommendation carries `vendor: "claude"` and
+`cli_model: "claude-opus-5"`. The separate `model` field remains AFG's
+canonical `opus-5`; do not pass it verbatim to the Claude CLI.
+
 The optional inputs describe the proposed work:
 
 | Option | Effect |
@@ -156,6 +162,7 @@ afg --recommend-minion --duration 2h --effort high --json
   "recommendation": "sol",
   "vendor": "codex",
   "model": "gpt-5.6-sol",
+  "cli_model": "gpt-5.6-sol",
   "effort": "high",
   "expectedDurationSeconds": 7200.0,
   "method": "worst reset-adjusted quota pressure",
@@ -164,11 +171,13 @@ afg --recommend-minion --duration 2h --effort high --json
   "warnings": [],
   "candidates": {
     "sol": {
+      "cli_model": "gpt-5.6-sol",
       "status": "ready",
       "pressure": 73.9,
       "meters": [{ "label": "7d all models", "pressure": 73.9 }]
     },
     "opus-5": {
+      "cli_model": "claude-opus-5",
       "status": "ready",
       "pressure": 127.5,
       "meters": [{ "label": "7d Fable", "pressure": 127.5 }]
@@ -181,7 +190,9 @@ The normal five-minute shared cache applies. If a fresh poll fails but cached
 gauges survive, AFG may still recommend from them: plain mode warns on stderr,
 while JSON sets `stale: true`, preserves each candidate's `capturedAt` and
 `dataAgeSeconds`, and includes the warning. A JSON failure uses the same schema
-with `error.code: "no_usable_candidate"` and exits nonzero.
+with `error.code: "no_usable_candidate"` and exits nonzero. Candidate records
+in both success and failure payloads include `cli_model`, so a consumer can
+inspect either vendor without maintaining its own model-name translation.
 
 ### The arrow tells you what to do
 
