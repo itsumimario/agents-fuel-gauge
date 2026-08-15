@@ -414,7 +414,7 @@ request, including simultaneous presses of `r`.
 
 A 429 records its `Retry-After` when supplied, plus the local PID and whether
 an automatic poll or manual refresh triggered it. Without a longer server
-deadline, a repeating incident backs off for 2, 4, 8, 16, 32, then 60 minutes;
+deadline, a repeating incident backs off for 2, 4, 8, then at most 15 minutes;
 a brief success does not immediately forget the pattern. Automatic polls wait
 out that deadline. A later `r` remains one deliberate recovery probe, so it can
 confirm that a provider recovered without opening the door to every caller.
