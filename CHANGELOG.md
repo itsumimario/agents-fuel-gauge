@@ -3,6 +3,14 @@
 Notable user-facing changes to agents-fuel-gauge are recorded here. Releases
 before 0.8.0 were documented in the Git commit history.
 
+## 0.13.1 - 2026-08-14
+
+### Changed
+
+- Reduced the adaptive 429 backoff ceiling from 60 minutes to 15 minutes. A
+  repeating incident now waits 2, 4, 8, then at most 15 minutes, while `r`
+  remains available as an explicit recovery probe.
+
 ## 0.13.0 - 2026-08-14
 
 ### Added
