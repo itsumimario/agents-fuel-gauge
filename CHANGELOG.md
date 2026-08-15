@@ -3,6 +3,19 @@
 Notable user-facing changes to agents-fuel-gauge are recorded here. Releases
 before 0.8.0 were documented in the Git commit history.
 
+## 0.14.0 - 2026-08-15
+
+### Added
+
+- Added `afg --recommend-minion`, a Stellate-facing one-shot query that emits
+  only `sol` or `opus-5` on successful plain output. The recommendation weighs
+  each candidate's current utilization and projected quota pressure, prefers
+  Sol near ties, accepts optional expected duration and effort, and refuses to
+  guess when neither candidate has usable, available quota data.
+- Added a versioned JSON recommendation envelope with candidate meter evidence,
+  provider/model mapping, rationale, data age, stale warnings, and a structured
+  nonzero failure response for machine consumers.
+
 ## 0.13.1 - 2026-08-14
 
 ### Changed
