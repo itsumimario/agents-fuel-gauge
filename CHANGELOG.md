@@ -3,6 +3,15 @@
 Notable user-facing changes to agents-fuel-gauge are recorded here. Releases
 before 0.8.0 were documented in the Git commit history.
 
+## 0.14.1 - 2026-08-15
+
+### Fixed
+
+- Added a vendor-exact `cli_model` to the chosen recommendation and every
+  candidate in `afg.minion-recommendation/v1`. Consumers can now pass
+  `claude-opus-5` or `gpt-5.6-sol` to the corresponding CLI instead of
+  mistaking AFG's stable `opus-5` policy name for a launchable model ID.
+
 ## 0.14.0 - 2026-08-15
 
 ### Added
