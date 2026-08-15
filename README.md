@@ -89,6 +89,9 @@ uv tool install git+https://github.com/itsumimario/agents-fuel-gauge.git
   scripts, prompts, cron, and CI.
 - **A tiny JSON service for anything else.** `afg --json` gives other tools a
   clean, normalised feed — and a rate instruction per meter they can act on.
+- **Placement advice for Stellate leaders.** `afg --recommend-minion` balances
+  current Sol and Opus 5 quota pressure and emits one stable choice a leader
+  can use before creating a minion.
 
 ## Usage
 
@@ -98,9 +101,87 @@ afg --check              # one-shot, plain text
 afg --check --pretty     # one-shot, with bars
 afg --json               # one-shot, machine-readable
 afg --watch --json       # keep emitting, one JSON object per line
+afg --recommend-minion   # emit sol or opus-5 for a new Stellate minion
 afg --demo               # synthetic data, no accounts needed
 afg --update             # update to the latest version
 ```
+
+### Choosing a provider for a Stellate minion
+
+Ask AFG immediately before creating a minion:
+
+```sh
+agent=$(afg --recommend-minion)       # stdout is exactly: sol or opus-5
+afg --recommend-minion --duration 2h --effort high
+```
+
+A successful plain query prints exactly one supported recommendation:
+`sol` means Codex with `gpt-5.6-sol`; `opus-5` means Claude with `opus-5`.
+Warnings go to stderr, so command substitution remains safe. AFG exits nonzero
+without emitting either value when neither candidate has usable, available
+quota data. It never guesses through missing data or recommends an already
+exhausted candidate.
+
+The optional inputs describe the proposed work:
+
+| Option | Effect |
+| --- | --- |
+| `--duration 45m` | Discounts pressure from a quota window that resets during the expected run. Accepts `s`, `m`, `h`, `d`, and `w`, including forms such as `1h30m`. |
+| `--effort low` | Keeps the Sol preference unless Opus 5 is more than 20 quota-pressure points healthier. |
+| `--effort medium` | The default; switches when Opus 5 is more than 10 points healthier. |
+| `--effort high` | Switches when Opus 5 is more than 5 points healthier, reserving the preferred provider less aggressively for substantial work. |
+
+AFG scores each candidate by its tightest applicable quota meter. It considers
+both the percentage already used and the usage projected at reset from the
+window's average pace. All-model meters always apply; a matching model-scoped
+meter also applies, as does a Claude scoped meter the provider explicitly marks
+active. Near ties go to Sol. If only one candidate has usable data and quota,
+that candidate wins.
+
+This is a quota-pressure heuristic, not a token forecast. AFG does not know the
+task's future consumption or pretend that one percentage point represents the
+same number of tokens on two different subscriptions. Duration only says how
+long current-window pressure remains relevant; effort controls how large the
+health advantage must be to override the Sol preference.
+
+Use `--json` for the evidence behind the choice:
+
+```sh
+afg --recommend-minion --duration 2h --effort high --json
+```
+
+```json
+{
+  "schema": "afg.minion-recommendation/v1",
+  "recommendation": "sol",
+  "vendor": "codex",
+  "model": "gpt-5.6-sol",
+  "effort": "high",
+  "expectedDurationSeconds": 7200.0,
+  "method": "worst reset-adjusted quota pressure",
+  "reason": "Sol is preferred because Opus 5 is not more than 5.0 quota-pressure points healthier",
+  "stale": false,
+  "warnings": [],
+  "candidates": {
+    "sol": {
+      "status": "ready",
+      "pressure": 73.9,
+      "meters": [{ "label": "7d all models", "pressure": 73.9 }]
+    },
+    "opus-5": {
+      "status": "ready",
+      "pressure": 127.5,
+      "meters": [{ "label": "7d Fable", "pressure": 127.5 }]
+    }
+  }
+}
+```
+
+The normal five-minute shared cache applies. If a fresh poll fails but cached
+gauges survive, AFG may still recommend from them: plain mode warns on stderr,
+while JSON sets `stale: true`, preserves each candidate's `capturedAt` and
+`dataAgeSeconds`, and includes the warning. A JSON failure uses the same schema
+with `error.code: "no_usable_candidate"` and exits nonzero.
 
 ### The arrow tells you what to do
 
