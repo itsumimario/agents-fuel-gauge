@@ -1,4 +1,4 @@
-"""The Stellate-facing Sol/Opus recommendation contract."""
+"""The AFG-owned Sol/Opus placement recommendation contract."""
 
 import json
 from datetime import datetime, timedelta, timezone
@@ -10,7 +10,7 @@ from agents_fuel_gauge.models import Gauge, ProviderSnapshot
 from agents_fuel_gauge.recommend import (
     RecommendationUnavailable,
     parse_duration,
-    recommend_minion,
+    recommend_placement,
 )
 
 
@@ -73,21 +73,21 @@ class TestDuration:
 
 class TestRecommendation:
     def test_sol_wins_when_it_is_healthier(self):
-        result = recommend_minion(snapshots(), now=NOW)
+        result = recommend_placement(snapshots(), now=NOW)
 
         assert result.recommendation == "sol"
 
     def test_opus_wins_when_sol_is_materially_more_pressured(self):
         data = snapshots(sol=gauge(60, 0.5), opus=gauge(20, 0.5))
 
-        result = recommend_minion(data, now=NOW)
+        result = recommend_placement(data, now=NOW)
 
         assert result.recommendation == "opus-5"
 
     def test_near_ties_prefer_sol(self):
         data = snapshots(sol=gauge(30, 0.5), opus=gauge(27.5, 0.5))
 
-        result = recommend_minion(data, now=NOW)
+        result = recommend_placement(data, now=NOW)
 
         assert result.recommendation == "sol"
         assert "preferred" in result.reason
@@ -95,9 +95,9 @@ class TestRecommendation:
     def test_effort_controls_how_readily_opus_overrides_the_preference(self):
         data = snapshots(sol=gauge(30, 0.5), opus=gauge(26, 0.5))
 
-        assert recommend_minion(data, effort="low", now=NOW).recommendation == "sol"
-        assert recommend_minion(data, effort="medium", now=NOW).recommendation == "sol"
-        assert recommend_minion(data, effort="high", now=NOW).recommendation == "opus-5"
+        assert recommend_placement(data, effort="low", now=NOW).recommendation == "sol"
+        assert recommend_placement(data, effort="medium", now=NOW).recommendation == "sol"
+        assert recommend_placement(data, effort="high", now=NOW).recommendation == "opus-5"
 
     def test_duration_discounts_a_constraint_that_resets_during_the_run(self):
         sol = Gauge(
@@ -109,8 +109,8 @@ class TestRecommendation:
         )
         data = snapshots(sol=sol, opus=gauge(30, 0.5))
 
-        assert recommend_minion(data, now=NOW).recommendation == "opus-5"
-        result = recommend_minion(data, duration_seconds=2 * 3_600, now=NOW)
+        assert recommend_placement(data, now=NOW).recommendation == "opus-5"
+        result = recommend_placement(data, duration_seconds=2 * 3_600, now=NOW)
         assert result.recommendation == "sol"
         sol_meter = result.candidates["sol"].meters[0]
         assert sol_meter.exposure == pytest.approx(0.25)
@@ -120,7 +120,7 @@ class TestRecommendation:
         # its week.  The existing workload is already on course to exhaust it.
         data = snapshots(sol=gauge(30, 0.2), opus=gauge(35, 0.8))
 
-        result = recommend_minion(data, now=NOW)
+        result = recommend_placement(data, now=NOW)
 
         assert result.recommendation == "opus-5"
         assert result.candidates["sol"].pressure == pytest.approx(150)
@@ -142,7 +142,7 @@ class TestRecommendation:
             gauges=[gauge(40, 0.5)],
         )
 
-        result = recommend_minion([claude, codex], now=NOW)
+        result = recommend_placement([claude, codex], now=NOW)
 
         assert result.recommendation == "sol"
         assert [m.applicability for m in result.candidates["opus-5"].meters] == [
@@ -160,7 +160,7 @@ class TestRecommendation:
                 gauge(99, 0.5, scope="GPT-5.3-Codex-Spark"),
             ],
         )
-        result = recommend_minion([snapshots()[0], codex], now=NOW)
+        result = recommend_placement([snapshots()[0], codex], now=NOW)
 
         assert result.recommendation == "sol"
         assert [m.scope for m in result.candidates["sol"].meters] == ["all models"]
@@ -171,7 +171,7 @@ class TestRecommendation:
         data[1].error = "rate limited (429)"
         data[1].captured_at = NOW - timedelta(hours=2)
 
-        result = recommend_minion(data, now=NOW)
+        result = recommend_placement(data, now=NOW)
 
         assert result.recommendation == "sol"
         assert result.candidates["sol"].data_usable is True
@@ -186,7 +186,7 @@ class TestRecommendation:
             error="Claude CLI is not installed or not on PATH",
         )
 
-        result = recommend_minion([absent, snapshots()[1]], now=NOW)
+        result = recommend_placement([absent, snapshots()[1]], now=NOW)
 
         assert result.recommendation == "sol"
         assert "only available" in result.reason
@@ -194,7 +194,7 @@ class TestRecommendation:
     def test_exhausted_candidate_is_never_recommended(self):
         data = snapshots(sol=gauge(100, 0.5), opus=gauge(70, 0.5))
 
-        result = recommend_minion(data, now=NOW)
+        result = recommend_placement(data, now=NOW)
 
         assert result.recommendation == "opus-5"
         assert result.candidates["sol"].status == "quota_exhausted"
@@ -206,14 +206,14 @@ class TestRecommendation:
         ]
 
         with pytest.raises(RecommendationUnavailable) as caught:
-            recommend_minion(unavailable, now=NOW)
+            recommend_placement(unavailable, now=NOW)
 
         assert caught.value.to_dict()["error"]["code"] == "no_usable_candidate"
 
     def test_json_contract_names_only_supported_recommendations(self):
-        payload = recommend_minion(snapshots(), now=NOW).to_dict()
+        payload = recommend_placement(snapshots(), now=NOW).to_dict()
 
-        assert payload["schema"] == "afg.minion-recommendation/v1"
+        assert payload["schema"] == "afg.placement-recommendation/v1"
         assert payload["recommendation"] in {"sol", "opus-5"}
         assert (payload["vendor"], payload["model"]) == ("codex", "gpt-5.6-sol")
         assert payload["cli_model"] == "gpt-5.6-sol"
@@ -227,7 +227,7 @@ class TestRecommendation:
     def test_opus_recommendation_publishes_the_exact_claude_cli_model(self):
         data = snapshots(sol=gauge(60, 0.5), opus=gauge(20, 0.5))
 
-        payload = recommend_minion(data, now=NOW).to_dict()
+        payload = recommend_placement(data, now=NOW).to_dict()
 
         assert payload["recommendation"] == "opus-5"
         assert payload["model"] == "opus-5"
@@ -236,7 +236,7 @@ class TestRecommendation:
 
 class TestRecommendationCli:
     def test_plain_stdout_is_exactly_one_stable_enum(self, capsys):
-        assert main(["--demo", "--recommend-minion"]) == 0
+        assert main(["--demo", "--recommend-placement"]) == 0
 
         captured = capsys.readouterr()
         assert captured.out == "sol\n"
@@ -245,7 +245,7 @@ class TestRecommendationCli:
     def test_json_is_structured_recommendation_not_the_normal_usage_envelope(
         self, capsys
     ):
-        assert main(["--demo", "--recommend-minion", "--json", "--effort", "high"]) == 0
+        assert main(["--demo", "--recommend-placement", "--json", "--effort", "high"]) == 0
 
         payload = json.loads(capsys.readouterr().out)
         assert payload["recommendation"] in {"sol", "opus-5"}
@@ -263,7 +263,7 @@ class TestRecommendationCli:
             return data
 
         monkeypatch.setattr("agents_fuel_gauge.cli.fetch_all", stale)
-        assert main(["--recommend-minion"]) == 0
+        assert main(["--recommend-placement"]) == 0
 
         captured = capsys.readouterr()
         assert captured.out == "sol\n"
@@ -275,7 +275,7 @@ class TestRecommendationCli:
             return []
 
         monkeypatch.setattr("agents_fuel_gauge.cli.fetch_all", broken)
-        assert main(["--recommend-minion", "--json"]) == 1
+        assert main(["--recommend-placement", "--json"]) == 1
 
         payload = json.loads(capsys.readouterr().out)
         assert payload["error"]["code"] == "no_usable_candidate"
@@ -292,7 +292,7 @@ class TestRecommendationCli:
 
         monkeypatch.setattr("agents_fuel_gauge.cli.fetch_all", explode)
         with pytest.raises(SystemExit) as caught:
-            main(["--recommend-minion", "--duration", "a while"])
+            main(["--recommend-placement", "--duration", "a while"])
         assert caught.value.code == 2
 
     def test_duration_and_effort_are_scoped_to_recommendation_mode(self):

@@ -89,9 +89,9 @@ uv tool install git+https://github.com/itsumimario/agents-fuel-gauge.git
   scripts, prompts, cron, and CI.
 - **A tiny JSON service for anything else.** `afg --json` gives other tools a
   clean, normalised feed — and a rate instruction per meter they can act on.
-- **Placement advice for Stellate leaders.** `afg --recommend-minion` balances
-  current Sol and Opus 5 quota pressure and emits one stable choice a leader
-  can use before creating a minion.
+- **Placement advice for additional work.** `afg --recommend-placement`
+  balances current Sol and Opus 5 quota pressure and emits one stable choice
+  that any launcher or script can use.
 
 ## Usage
 
@@ -101,18 +101,18 @@ afg --check              # one-shot, plain text
 afg --check --pretty     # one-shot, with bars
 afg --json               # one-shot, machine-readable
 afg --watch --json       # keep emitting, one JSON object per line
-afg --recommend-minion   # emit sol or opus-5 for a new Stellate minion
+afg --recommend-placement # emit sol or opus-5 for additional work
 afg --demo               # synthetic data, no accounts needed
 afg --update             # update to the latest version
 ```
 
-### Choosing a provider for a Stellate minion
+### Choosing a provider for additional work
 
-Ask AFG immediately before creating a minion:
+Ask AFG immediately before starting a task:
 
 ```sh
-agent=$(afg --recommend-minion)       # stdout is exactly: sol or opus-5
-afg --recommend-minion --duration 2h --effort high
+choice=$(afg --recommend-placement)   # stdout is exactly: sol or opus-5
+afg --recommend-placement --duration 2h --effort high
 ```
 
 A successful plain query prints exactly one supported recommendation:
@@ -153,12 +153,12 @@ health advantage must be to override the Sol preference.
 Use `--json` for the evidence behind the choice:
 
 ```sh
-afg --recommend-minion --duration 2h --effort high --json
+afg --recommend-placement --duration 2h --effort high --json
 ```
 
 ```json
 {
-  "schema": "afg.minion-recommendation/v1",
+  "schema": "afg.placement-recommendation/v1",
   "recommendation": "sol",
   "vendor": "codex",
   "model": "gpt-5.6-sol",

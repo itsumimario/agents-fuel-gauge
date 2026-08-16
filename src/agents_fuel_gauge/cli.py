@@ -6,7 +6,7 @@ Three ways to read the same data:
   afg --check          one-shot, plain text (default: greppable, no colour)
   afg --check --pretty one-shot, with bars and colour
   afg --json           one-shot, machine-readable
-  afg --recommend-minion  choose Sol or Opus 5 for new Stellate work
+  afg --recommend-placement  choose Sol or Opus 5 for additional work
 """
 
 from __future__ import annotations
@@ -279,16 +279,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="print one reading as JSON and exit (for scripts and status bars)",
     )
     parser.add_argument(
-        "--recommend-minion", action="store_true",
-        help="emit sol or opus-5 for a new Stellate minion and exit",
+        "--recommend-placement", action="store_true",
+        help="emit sol or opus-5 for additional work and exit",
     )
     parser.add_argument(
         "--duration", metavar="DURATION",
-        help="expected minion duration, such as 45m, 2h, or 1h30m",
+        help="expected work duration, such as 45m, 2h, or 1h30m",
     )
     parser.add_argument(
         "--effort", choices=("low", "medium", "high"),
-        help="expected minion effort (default with --recommend-minion: medium)",
+        help="expected work effort (default with --recommend-placement: medium)",
     )
     parser.add_argument(
         "-i", "--interval", type=float, default=cache.DEFAULT_POLL_INTERVAL,
@@ -358,10 +358,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    if (args.duration is not None or args.effort is not None) and not args.recommend_minion:
-        parser.error("--duration and --effort require --recommend-minion")
-    if args.recommend_minion and (args.watch or args.check or args.pretty):
-        parser.error("--recommend-minion cannot be combined with --watch, --check, or --pretty")
+    if (args.duration is not None or args.effort is not None) and not args.recommend_placement:
+        parser.error("--duration and --effort require --recommend-placement")
+    if args.recommend_placement and (args.watch or args.check or args.pretty):
+        parser.error("--recommend-placement cannot be combined with --watch, --check, or --pretty")
 
     duration_seconds = None
     if args.duration is not None:
@@ -402,12 +402,12 @@ def main(argv: list[str] | None = None) -> int:
         except KeyboardInterrupt:
             return 0
 
-    if args.recommend_minion:
-        from .recommend import RecommendationUnavailable, recommend_minion
+    if args.recommend_placement:
+        from .recommend import RecommendationUnavailable, recommend_placement
 
         snapshots = asyncio.run(fetcher())
         try:
-            recommendation = recommend_minion(
+            recommendation = recommend_placement(
                 snapshots,
                 duration_seconds=duration_seconds,
                 effort=args.effort or "medium",
@@ -417,7 +417,7 @@ def main(argv: list[str] | None = None) -> int:
                 json.dump(exc.to_dict(), sys.stdout, indent=2)
                 sys.stdout.write("\n")
             else:
-                print(f"afg: cannot recommend a minion: {exc}", file=sys.stderr)
+                print(f"afg: cannot recommend placement: {exc}", file=sys.stderr)
                 for warning in exc.warnings:
                     print(f"warning: {warning}", file=sys.stderr)
             return 1
@@ -426,7 +426,6 @@ def main(argv: list[str] | None = None) -> int:
             json.dump(recommendation.to_dict(), sys.stdout, indent=2)
             sys.stdout.write("\n")
         else:
-            # This one-token stdout contract is the interface Stellate needs.
             # Human-readable caveats belong on stderr so command substitution
             # remains exactly `sol` or `opus-5`.
             print(recommendation.recommendation)

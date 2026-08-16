@@ -1,4 +1,4 @@
-"""Choose the healthier subscription for a newly launched Stellate minion.
+"""Choose the healthier subscription for additional work.
 
 This deliberately answers one narrow question: whether the user's current
 subscription headroom makes Sol or Opus 5 the safer place for *additional*
@@ -17,11 +17,11 @@ from datetime import datetime, timezone
 from .models import Gauge, ProviderSnapshot
 
 
-SCHEMA = "afg.minion-recommendation/v1"
+SCHEMA = "afg.placement-recommendation/v1"
 
 # Sol is the default when the choices are close.  More consequential work gets
 # a smaller margin, so a modestly healthier Opus subscription can win before a
-# long/high-effort minion is committed to the preferred provider.
+# long/high-effort task is committed to the preferred provider.
 EFFORT_MARGINS = {
     "low": 20.0,
     "medium": 10.0,
@@ -165,7 +165,7 @@ class CandidateAssessment:
 
 
 @dataclass(frozen=True)
-class MinionRecommendation:
+class PlacementRecommendation:
     recommendation: str
     effort: str
     expected_duration_seconds: float | None
@@ -339,13 +339,13 @@ def _assess_candidate(
     return assessment
 
 
-def recommend_minion(
+def recommend_placement(
     snapshots: list[ProviderSnapshot],
     *,
     duration_seconds: float | None = None,
     effort: str = "medium",
     now: datetime | None = None,
-) -> MinionRecommendation:
+) -> PlacementRecommendation:
     """Recommend ``sol`` or ``opus-5`` from normalized provider snapshots."""
     if effort not in EFFORT_MARGINS:
         raise ValueError(f"unknown effort {effort!r}")
@@ -404,7 +404,7 @@ def recommend_minion(
                 f"{margin:.1f} quota-pressure points healthier"
             )
 
-    return MinionRecommendation(
+    return PlacementRecommendation(
         recommendation=choice,
         effort=effort,
         expected_duration_seconds=duration_seconds,

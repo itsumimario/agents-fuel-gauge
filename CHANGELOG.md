@@ -3,12 +3,24 @@
 Notable user-facing changes to agents-fuel-gauge are recorded here. Releases
 before 0.8.0 were documented in the Git commit history.
 
+## 0.15.0 - 2026-08-16
+
+### Changed
+
+- Replaced the experimental provider/model recommendation interface with the
+  AFG-owned `afg --recommend-placement` contract. Plain output remains exactly
+  `sol` or `opus-5`; optional duration and effort inputs retain their existing
+  scoring semantics.
+- Published the replacement JSON contract as
+  `afg.placement-recommendation/v1`, retaining the rationale, quota evidence,
+  stale-data metadata, and exact vendor `cli_model` identifiers.
+
 ## 0.14.1 - 2026-08-15
 
 ### Fixed
 
 - Added a vendor-exact `cli_model` to the chosen recommendation and every
-  candidate in `afg.minion-recommendation/v1`. Consumers can now pass
+  candidate in the versioned recommendation JSON. Consumers can now pass
   `claude-opus-5` or `gpt-5.6-sol` to the corresponding CLI instead of
   mistaking AFG's stable `opus-5` policy name for a launchable model ID.
 
@@ -16,8 +28,8 @@ before 0.8.0 were documented in the Git commit history.
 
 ### Added
 
-- Added `afg --recommend-minion`, a Stellate-facing one-shot query that emits
-  only `sol` or `opus-5` on successful plain output. The recommendation weighs
+- Added a one-shot provider/model placement query that emits only `sol` or
+  `opus-5` on successful plain output. The recommendation weighs
   each candidate's current utilization and projected quota pressure, prefers
   Sol near ties, accepts optional expected duration and effort, and refuses to
   guess when neither candidate has usable, available quota data.
