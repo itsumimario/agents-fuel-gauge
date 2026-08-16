@@ -3,7 +3,7 @@
 Every subscription quota for Claude Code and Codex, on one screen.
 """
 
-__version__ = "0.14.1"
+__version__ = "0.15.0"
 __author__ = "ItsumiMario"
 __license__ = "MIT"
 
